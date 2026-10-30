@@ -12,6 +12,7 @@ export type AccountStatus = 'active' | 'expired' | 'error' | 'refreshing' | 'unk
  * 账号凭证信息
  */
 export interface AccountCredentials {
+  credentialRevision?: number // 主进程提交版本，防止旧 UI 快照覆盖已轮换凭据
   accessToken: string
   csrfToken: string
   refreshToken?: string

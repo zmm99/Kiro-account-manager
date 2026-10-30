@@ -3,6 +3,9 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
 const api = {
+  openKiroWeb: (accountId: string): Promise<{ success: boolean; reused?: boolean; error?: string }> => {
+    return ipcRenderer.invoke('kiro-web:open', accountId)
+  },
   // 打开外部链接
   openExternal: (url: string, usePrivateMode?: boolean): void => {
     ipcRenderer.send('open-external', url, usePrivateMode)

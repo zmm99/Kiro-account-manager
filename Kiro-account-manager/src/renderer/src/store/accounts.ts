@@ -628,7 +628,9 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
       const accounts = new Map(state.accounts)
       const account = accounts.get(id)
       if (account) {
-        accounts.set(id, { ...account, ...updates })
+        accounts.set(id, { ...account, ...updates,
+          ...(updates.credentials ? { credentials: { ...updates.credentials,
+            credentialRevision: (account.credentials.credentialRevision || 0) + 1 } } : {}) })
       }
       return { accounts }
     })

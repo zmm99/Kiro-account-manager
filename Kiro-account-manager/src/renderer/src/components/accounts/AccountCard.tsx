@@ -24,7 +24,8 @@ import {
   CreditCard,
   Sparkles,
   LogOut,
-  RotateCcw
+  RotateCcw,
+  Globe
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -199,6 +200,22 @@ export const AccountCard = memo(function AccountCard({
 
   const { t } = useTranslation()
   const isEn = t('common.unknown') === 'Unknown'
+  const [isOpeningWeb, setIsOpeningWeb] = useState(false)
+  const [webOpenError, setWebOpenError] = useState<string | null>(null)
+  const webProvider = account.credentials.provider || account.idp
+  const canOpenWeb = webProvider === 'Github' && !!account.credentials.refreshToken
+
+  const handleOpenWeb = async (): Promise<void> => {
+    if (isOpeningWeb) return
+    setIsOpeningWeb(true)
+    setWebOpenError(null)
+    try {
+      const result = await window.api.openKiroWeb(account.id)
+      if (!result.success) setWebOpenError(result.error || (isEn ? 'Could not open Kiro Web' : '无法打开 Kiro Web'))
+    } catch {
+      setWebOpenError(isEn ? 'Could not open Kiro Web' : '无法打开 Kiro Web')
+    } finally { setIsOpeningWeb(false) }
+  }
 
   // 格式化使用量数值
   const formatUsage = (value: number): string => {
@@ -843,6 +860,12 @@ export const AccountCard = memo(function AccountCard({
                  </Button>
                )}
                
+               <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                 onClick={(e) => { e.stopPropagation(); void handleOpenWeb() }} disabled={!canOpenWeb || isOpeningWeb}
+                 aria-label={isEn ? 'Open Kiro Web in browser' : '在浏览器打开 Kiro Web'}
+                 title={!canOpenWeb ? (isEn ? 'Requires a GitHub account with a Refresh Token' : '需要带 Refresh Token 的 GitHub 账号') : (isEn ? 'Open Kiro Web in browser' : '在浏览器打开 Kiro Web')}>
+                  {isOpeningWeb ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
+               </Button>
                <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); handleRefresh() }} disabled={account.status === 'refreshing'} title={isEn ? 'Check account info' : '检查账户信息（用量、订阅、封禁状态）'}>
                   <RefreshCw className={cn("h-3.5 w-3.5", account.status === 'refreshing' && "animate-spin")} />
                </Button>
@@ -868,6 +891,7 @@ export const AccountCard = memo(function AccountCard({
             </div>
         </div>
 
+        {webOpenError && <div role="alert" className="text-destructive text-[10px] mt-1" title={webOpenError}>{webOpenError}</div>}
         {/* Error Message (Non-banned) */}
         {account.lastError && !isUnauthorized && (
           <div className="bg-red-50 text-red-600 text-[10px] p-1.5 rounded flex items-center gap-1.5 truncate mt-1" title={account.lastError}>

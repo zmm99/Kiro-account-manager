@@ -20,6 +20,7 @@
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:linux": "electron-vite build && electron-builder --linux",
+    "test:kiro-web": "node --test test/kiro-web.test.mjs",
     "test:e2e": "node test/e2e-fullsuite/run.mjs",
     "test:e2e:only": "node test/e2e-fullsuite/run.mjs --only"
   },
@@ -37,6 +38,7 @@
     "js-tiktoken": "^1.0.21",
     "lucide-react": "^0.555.0",
     "node-forge": "^1.3.3",
+    "playwright-core": "1.61.1",
     "socks": "^2.8.9",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^4.1.17",

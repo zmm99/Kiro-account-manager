@@ -35,14 +35,15 @@ export function AboutPage() {
   const { darkMode } = useAccountsStore()
   const { t } = useTranslation()
   const isEn = t('common.unknown') === 'Unknown'
+  const updatesEnabled = false // This fork is installed and updated manually.
 
   useEffect(() => {
     window.api.getAppVersion().then(setVersion)
-    // 不自动检查更新，避免 GitHub API 速率限制
-    // 用户可以手动点击"检查更新"按钮
+    // Updates are disabled for this fork.
   }, [])
 
   const checkForUpdates = async (showModal = true) => {
+    if (!updatesEnabled) return
     setIsCheckingUpdate(true)
     try {
       const result = await window.api.checkForUpdatesManual()
@@ -91,10 +92,10 @@ export function AboutPage() {
             size="sm"
             className="gap-2"
             onClick={() => checkForUpdates(true)}
-            disabled={isCheckingUpdate}
+            disabled={!updatesEnabled || isCheckingUpdate}
           >
             <RefreshCw className={cn("h-4 w-4", isCheckingUpdate && "animate-spin")} />
-            {isCheckingUpdate ? (isEn ? 'Checking...' : '检查中...') : (isEn ? 'Check Updates' : '检查更新')}
+            {!updatesEnabled ? (isEn ? 'Updates disabled' : '更新已关闭') : isCheckingUpdate ? (isEn ? 'Checking...' : '检查中...') : (isEn ? 'Check Updates' : '检查更新')}
           </Button>
           <Button
             variant="outline"

@@ -136,6 +136,7 @@ interface StatusResult {
 }
 
 interface KiroApi {
+  openKiroWeb: (accountId: string) => Promise<{ success: boolean; reused?: boolean; error?: string }>
   openExternal: (url: string, usePrivateMode?: boolean) => void
   getAppVersion: () => Promise<string>
   onAuthCallback: (callback: (data: { code: string; state: string }) => void) => () => void

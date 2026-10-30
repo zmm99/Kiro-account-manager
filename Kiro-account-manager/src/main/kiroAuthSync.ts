@@ -18,6 +18,7 @@ import * as fsSync from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
+import { atomicPrivateWrite } from './kiroWebCredentials'
 
 export const KIRO_SSO_CACHE_DIR = path.join(os.homedir(), '.aws', 'sso', 'cache')
 export const KIRO_AUTH_TOKEN_PATH = path.join(KIRO_SSO_CACHE_DIR, 'kiro-auth-token.json')
@@ -154,9 +155,7 @@ export async function writeKiroAuthTokenFile(
           profileArn: input.profileArn
         }
 
-  await fs.writeFile(KIRO_AUTH_TOKEN_PATH, JSON.stringify(tokenData, null, 2), {
-    mode: 0o600
-  })
+  await atomicPrivateWrite(KIRO_AUTH_TOKEN_PATH, JSON.stringify(tokenData, null, 2))
   // Windows 上 chmod 对 0o600 是 no-op 但不抛错；Linux/macOS 上保证权限正确
   try {
     await fs.chmod(KIRO_AUTH_TOKEN_PATH, 0o600)
@@ -175,7 +174,7 @@ export async function writeKiroAuthTokenFile(
       expiresAt: clientExpiresAt,
       scopes: KIRO_OIDC_SCOPES
     }
-    await fs.writeFile(clientRegPath, JSON.stringify(clientData, null, 2), { mode: 0o600 })
+    await atomicPrivateWrite(clientRegPath, JSON.stringify(clientData, null, 2))
     try {
       await fs.chmod(clientRegPath, 0o600)
     } catch {
@@ -195,6 +194,16 @@ export async function readKiroAuthTokenFile(): Promise<KiroAuthTokenFile | null>
   } catch {
     return null
   }
+}
+
+/** Update a rotated shared RT without substituting a Web AT for the IDE AT. */
+export async function replaceKiroRefreshToken(expected: string, next: string): Promise<boolean> {
+  const content = await fs.readFile(KIRO_AUTH_TOKEN_PATH, 'utf8').catch(() => null)
+  if (!content) return false
+  const token = JSON.parse(content) as KiroAuthTokenFile
+  if (token.refreshToken !== expected) return false
+  await atomicPrivateWrite(KIRO_AUTH_TOKEN_PATH, JSON.stringify({ ...token, refreshToken: next }, null, 2))
+  return true
 }
 
 /**

@@ -1,5 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut, safeStorage } from 'electron'
 import * as machineIdModule from './machineId'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -20,6 +19,7 @@ import { fetchKiroModels, fetchSubscriptionToken, fetchAvailableSubscriptions, s
 import {
   writeKiroAuthTokenFile,
   readKiroAuthTokenFile,
+  replaceKiroRefreshToken,
   parseAccessTokenClaims,
   watchKiroAuthTokenFile,
   resolveProfileArnForWrite,
@@ -30,6 +30,10 @@ import { getSystemProxy, safeCreateProxyAgent } from './proxy/systemProxy'
 import { proxyLogStore, interceptConsole } from './proxy/logger'
 import { registerIPCHandlers as registerRegistrationHandlers } from './registration/ipc-handlers'
 import { registerProxyPoolIpcHandlers } from './ipc/proxyPool'
+import { KiroWebBrowser } from './kiroWebBrowser'
+import { kiroIdeIsRunning } from './kiroWebBrowserLauncher'
+import { KiroWebCredentialCoordinator, configureKiroWebCredentials, coordinateManagerRefresh,
+  mergeCredentialSnapshots, REFRESH_UNCERTAIN_ERROR, WebLoginError, type WebAccount } from './kiroWebCredentials'
 import {
   createTray,
   destroyTray,
@@ -42,60 +46,7 @@ import {
   defaultTraySettings
 } from './tray'
 
-// ============ 自动更新配置 ============
-autoUpdater.autoDownload = false
-autoUpdater.autoInstallOnAppQuit = true
-
-function setupAutoUpdater(): void {
-  // 检查更新出错
-  autoUpdater.on('error', (error) => {
-    console.error('[AutoUpdater] Error:', error)
-    mainWindow?.webContents.send('update-error', error.message)
-  })
-
-  // 检查更新中
-  autoUpdater.on('checking-for-update', () => {
-    console.log('[AutoUpdater] Checking for update...')
-    mainWindow?.webContents.send('update-checking')
-  })
-
-  // 有可用更新
-  autoUpdater.on('update-available', (info) => {
-    console.log('[AutoUpdater] Update available:', info.version)
-    mainWindow?.webContents.send('update-available', {
-      version: info.version,
-      releaseDate: info.releaseDate,
-      releaseNotes: info.releaseNotes
-    })
-  })
-
-  // 没有可用更新
-  autoUpdater.on('update-not-available', (info) => {
-    console.log('[AutoUpdater] No update available, current:', info.version)
-    mainWindow?.webContents.send('update-not-available', { version: info.version })
-  })
-
-  // 下载进度
-  autoUpdater.on('download-progress', (progress) => {
-    console.log(`[AutoUpdater] Download progress: ${progress.percent.toFixed(1)}%`)
-    mainWindow?.webContents.send('update-download-progress', {
-      percent: progress.percent,
-      bytesPerSecond: progress.bytesPerSecond,
-      transferred: progress.transferred,
-      total: progress.total
-    })
-  })
-
-  // 下载完成
-  autoUpdater.on('update-downloaded', (info) => {
-    console.log('[AutoUpdater] Update downloaded:', info.version)
-    mainWindow?.webContents.send('update-downloaded', {
-      version: info.version,
-      releaseDate: info.releaseDate,
-      releaseNotes: info.releaseNotes
-    })
-  })
-}
+// This fork is updated by installing a locally built package.
 
 // ============ Kiro API 调用 ============
 const KIRO_API_BASE = 'https://app.kiro.dev/service/KiroWebPortalService/operation'
@@ -729,8 +680,9 @@ async function refreshSocialToken(
     
     if (!response.ok) {
       const errorText = await response.text()
-      console.error(`[Social] Refresh failed: ${response.status} - ${errorText}`)
-      return { success: false, error: `HTTP ${response.status}: ${errorText}` }
+      const code = ['AccountSuspendedException', 'InvalidGrantException', 'InvalidTokenException', 'invalid_grant']
+        .find(value => errorText.includes(value))
+      return { success: false, error: `HTTP ${response.status}${code ? `: ${code}` : ''}` }
     }
     
     const data = await response.json()
@@ -743,8 +695,7 @@ async function refreshSocialToken(
       expiresIn: data.expiresIn
     }
   } catch (error) {
-    console.error(`[Social] Refresh error:`, error)
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    return { success: false, error: REFRESH_UNCERTAIN_ERROR }
   }
 }
 
@@ -758,11 +709,9 @@ async function refreshTokenByMethod(
   proxyUrl?: string  // 账号绑定的代理 URL（可选，优先级最高）
 ): Promise<OidcRefreshResult> {
   // 如果是社交登录，使用 Kiro Auth Service 刷新
-  if (authMethod === 'social') {
-    return refreshSocialToken(token, proxyUrl)
-  }
-  // 否则使用 OIDC 刷新 (IdC/BuilderId)
-  return refreshOidcToken(token, clientId, clientSecret, region, proxyUrl)
+  return coordinateManagerRefresh(token, latest => authMethod === 'social'
+    ? refreshSocialToken(latest, proxyUrl)
+    : refreshOidcToken(latest, clientId, clientSecret, region, proxyUrl))
 }
 
 function generateInvocationId(): string {
@@ -1408,6 +1357,80 @@ let store: {
 
 // 最后保存的数据（用于崩溃恢复）
 let lastSavedData: unknown = null
+let kiroWebBrowser: KiroWebBrowser | null = null
+
+function saveAccountData(data: unknown): void {
+  if (!store) return
+  const reconciled = mergeCredentialSnapshots(data, store.get('accountData'))
+  store.set('accountData', reconciled)
+  lastSavedData = reconciled
+}
+
+function setupKiroWebBrowser(): void {
+  const data = (): { accounts?: Record<string, WebAccount>; activeAccountId?: string;
+    accountProxyBindings?: Record<string, string>; proxyPool?: Record<string, { url?: string; enabled?: boolean }> } =>
+    (store?.get('accountData') || {}) as ReturnType<typeof data>
+  const accounts = (): WebAccount[] => Object.entries(data().accounts || {}).map(([id, account]) => ({ ...account, id }))
+  const encrypt = (text: string): Buffer => {
+    if (!safeStorage.isEncryptionAvailable()) throw new WebLoginError('系统凭据加密不可用，已停止网页登录')
+    return safeStorage.encryptString(text)
+  }
+  const coordinator = new KiroWebCredentialCoordinator({
+    directory: join(app.getPath('userData'), 'kiro-web', 'credentials'), accounts, encrypt,
+    decrypt: bytes => safeStorage.decryptString(bytes),
+    beforeWebRefresh: async (account, latest) => {
+      const disk = await readKiroAuthTokenFile()
+      const sharesIde = lastSwitchedAccountId === account.id || data().activeAccountId === account.id ||
+        (disk && (disk.refreshToken === latest || disk.refreshToken === account.credentials.refreshToken ||
+          disk.accessToken === account.credentials.accessToken))
+      if (sharesIde && await kiroIdeIsRunning()) {
+        throw new WebLoginError('该账号正与运行中的 Kiro IDE 共用凭据；请先退出 IDE 再建立或续期网页会话')
+      }
+    },
+    commit: async (account, head) => {
+      const expected = account.credentials.refreshToken
+      if (head.refreshToken !== expected && expected) await replaceKiroRefreshToken(expected, head.refreshToken)
+      const snapshot = data()
+      const saved = snapshot.accounts?.[account.id]
+      if (!saved || saved.credentials.refreshToken !== expected ||
+        (saved.credentials.credentialRevision || 0) > (account.credentials.credentialRevision || 0)) {
+        throw new WebLoginError('账号凭据在刷新期间被修改，已保留恢复记录')
+      }
+      // Imported duplicate rows sharing this lineage are kept consistent too.
+      for (const [id, item] of Object.entries(snapshot.accounts || {})) {
+        if (item.credentials.refreshToken !== expected) continue
+        item.credentials = { ...item.credentials, refreshToken: head.refreshToken,
+          credentialRevision: head.revision,
+          ...(id === account.id ? { accessToken: head.accessToken, expiresAt: head.expiresAt } : {}) }
+        proxyServer?.getAccountPool().updateAccount(id, {
+          refreshToken: head.refreshToken,
+          ...(id === account.id && head.accessToken ? { accessToken: head.accessToken, expiresAt: head.expiresAt } : {})
+        })
+      }
+      saveAccountData(snapshot)
+      mainWindow?.webContents.send('kiro-ide-token-changed', { accountId: account.id, reason: 'credential-coordinator' })
+    }
+  })
+  // Other providers/platforms retain their existing manager refresh behavior.
+  if (process.platform === 'win32' && safeStorage.isEncryptionAvailable()) configureKiroWebCredentials(coordinator)
+  kiroWebBrowser = new KiroWebBrowser({
+    directory: join(app.getPath('userData'), 'kiro-web'), coordinator, encrypt,
+    decrypt: bytes => safeStorage.decryptString(bytes), account: id => accounts().find(a => a.id === id),
+    proxy: id => {
+      const snapshot = data(), binding = snapshot.accountProxyBindings?.[id]
+      if (!binding) return undefined
+      const proxy = snapshot.proxyPool?.[binding]
+      if (!proxy?.enabled || !proxy.url) throw new WebLoginError('该账号绑定的代理不可用，请先检查代理配置')
+      return proxy.url
+    }
+  })
+  ipcMain.handle('kiro-web:open', async (event, id: unknown) => {
+    if (event.sender !== mainWindow?.webContents || typeof id !== 'string' || id.length > 256) {
+      return { success: false, error: '无效的网页打开请求' }
+    }
+    return kiroWebBrowser!.open(id)
+  })
+}
 
 async function initStore(): Promise<void> {
   if (store) return
@@ -1518,7 +1541,7 @@ async function syncIdeTokenChangeToStore(token: {
     }
   }
   const accountData = store?.get('accountData') as
-    | { accounts?: Record<string, { id?: string; email?: string; credentials?: { accessToken?: string; refreshToken?: string; expiresAt?: number } }> }
+    | { accounts?: Record<string, { id?: string; email?: string; credentials?: { accessToken?: string; refreshToken?: string; expiresAt?: number; credentialRevision?: number } }> }
     | null
     | undefined
   if (!accountData?.accounts) {
@@ -1580,10 +1603,11 @@ async function syncIdeTokenChangeToStore(token: {
     ...accountToUpdate.credentials,
     accessToken: token.accessToken,
     refreshToken: token.refreshToken,
+    credentialRevision: (accountToUpdate.credentials?.credentialRevision || 0) + 1,
     expiresAt: Date.parse(token.expiresAt) || Date.now() + 3600 * 1000
   }
 
-  store!.set('accountData', accountData)
+  saveAccountData(accountData)
   console.log(
     `[KiroAuthSync] Synced IDE-refreshed token back to account ${accountToUpdate.email || matchedId} (${matchedReason})`
   )
@@ -1727,7 +1751,7 @@ async function runProactiveRenewal(accountId: string): Promise<void> {
       refreshToken: newRefresh,
       expiresAt: newExpiresAt
     }
-    store.set('accountData', accountData)
+    saveAccountData(accountData)
   }
 
   // 3. 通知 renderer reload
@@ -2343,7 +2367,7 @@ function createWindow(): void {
     if (lastSavedData && store) {
       try {
         console.log('[Window] Saving data before close...')
-        store.set('accountData', lastSavedData)
+        saveAccountData(lastSavedData)
         // 备份异步进行，不阻塞关闭
         createBackup(lastSavedData).then(() => {
           console.log('[Window] Backup created')
@@ -2446,16 +2470,8 @@ app.whenReady().then(async () => {
 
   // 加载托盘设置并初始化托盘
   await loadTraySettings()
+  setupKiroWebBrowser()
   initTray()
-
-  // 初始化自动更新（仅生产环境）
-  if (!is.dev) {
-    setupAutoUpdater()
-    // 启动后延迟检查更新
-    setTimeout(() => {
-      autoUpdater.checkForUpdates().catch(console.error)
-    }, 3000)
-  }
 
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.kiro.account-manager')
@@ -2598,122 +2614,15 @@ app.whenReady().then(async () => {
     return app.getVersion()
   })
 
-  // IPC: 检查更新
-  ipcMain.handle('check-for-updates', async () => {
-    if (is.dev) {
-      return { hasUpdate: false, message: '开发环境不支持更新检查' }
-    }
-    try {
-      const result = await autoUpdater.checkForUpdates()
-      return {
-        hasUpdate: !!result?.updateInfo,
-        version: result?.updateInfo?.version,
-        releaseDate: result?.updateInfo?.releaseDate
-      }
-    } catch (error) {
-      console.error('[AutoUpdater] Check failed:', error)
-      return { hasUpdate: false, error: error instanceof Error ? error.message : 'Unknown error' }
-    }
-  })
-
-  // IPC: 下载更新
-  ipcMain.handle('download-update', async () => {
-    if (is.dev) {
-      return { success: false, message: '开发环境不支持更新' }
-    }
-    try {
-      await autoUpdater.downloadUpdate()
-      return { success: true }
-    } catch (error) {
-      console.error('[AutoUpdater] Download failed:', error)
-      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
-    }
-  })
-
-  // IPC: 安装更新并重启
-  ipcMain.handle('install-update', () => {
-    autoUpdater.quitAndInstall(false, true)
-  })
-
-  // IPC: 手动检查更新（使用 GitHub API，用于 AboutPage）
-  const GITHUB_REPO = 'chaogei/Kiro-account-manager'
-  const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
-  
-  ipcMain.handle('check-for-updates-manual', async () => {
-    try {
-      console.log('[Update] Manual check via GitHub API...')
-      const currentVersion = app.getVersion()
-      
-      const response = await fetchWithAppProxy(GITHUB_API_URL, {
-        headers: {
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'Kiro-Account-Manager'
-        }
-      })
-      
-      if (!response.ok) {
-        if (response.status === 403) {
-          throw new Error('GitHub API 请求次数超限，请稍后再试')
-        } else if (response.status === 404) {
-          throw new Error('未找到发布版本')
-        }
-        throw new Error(`GitHub API 错误: ${response.status}`)
-      }
-      
-      const release = await response.json() as {
-        tag_name: string
-        name: string
-        body: string
-        html_url: string
-        published_at: string
-        assets: Array<{
-          name: string
-          browser_download_url: string
-          size: number
-        }>
-      }
-      
-      const latestVersion = release.tag_name.replace(/^v/, '')
-      
-      // 比较版本号
-      const compareVersions = (v1: string, v2: string): number => {
-        const parts1 = v1.split('.').map(Number)
-        const parts2 = v2.split('.').map(Number)
-        for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-          const p1 = parts1[i] || 0
-          const p2 = parts2[i] || 0
-          if (p1 > p2) return 1
-          if (p1 < p2) return -1
-        }
-        return 0
-      }
-      
-      const hasUpdate = compareVersions(latestVersion, currentVersion) > 0
-      
-      console.log(`[Update] Current: ${currentVersion}, Latest: ${latestVersion}, HasUpdate: ${hasUpdate}`)
-      
-      return {
-        hasUpdate,
-        currentVersion,
-        latestVersion,
-        releaseNotes: release.body || '',
-        releaseName: release.name || `v${latestVersion}`,
-        releaseUrl: release.html_url,
-        publishedAt: release.published_at,
-        assets: release.assets.map(a => ({
-          name: a.name,
-          downloadUrl: a.browser_download_url,
-          size: a.size
-        }))
-      }
-    } catch (error) {
-      console.error('[Update] Manual check failed:', error)
-      return {
-        hasUpdate: false,
-        error: error instanceof Error ? error.message : '检查更新失败'
-      }
-    }
-  })
+  // Keep the preload API compatible, but disable every updater entry point.
+  // Do not load electron-updater or attach its cached-update install-on-quit hook.
+  const updatesDisabled = '此分支已关闭更新，请手动安装本地编译版本'
+  ipcMain.handle('check-for-updates', () => ({ hasUpdate: false, message: updatesDisabled }))
+  ipcMain.handle('check-for-updates-manual', () => ({
+    hasUpdate: false, currentVersion: app.getVersion(), error: updatesDisabled
+  }))
+  ipcMain.handle('download-update', () => ({ success: false, error: updatesDisabled }))
+  ipcMain.handle('install-update', () => undefined)
 
   // ============ 一键诊断 ============
   /**
@@ -2957,13 +2866,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('save-accounts', async (_event, data) => {
     try {
       await initStore()
-      store!.set('accountData', data)
+      saveAccountData(data)
       
       // 保存最后的数据（用于崩溃恢复）
-      lastSavedData = data
+      lastSavedData = store!.get('accountData')
       
       // 每次保存时也创建备份
-      await createBackup(data)
+      await createBackup(lastSavedData)
     } catch (error) {
       console.error('Failed to save accounts:', error)
       throw error
@@ -6646,7 +6555,7 @@ app.whenReady().then(async () => {
             lastError: undefined,
             lastCheckedAt: Date.now()
           }
-          store.set('accountData', accountData)
+          saveAccountData(accountData)
           lastSavedData = accountData
         }
       }
@@ -7285,11 +7194,21 @@ app.on('window-all-closed', () => {
 
 // 应用退出前注销 URI 协议处理器并保存数据
 app.on('will-quit', async (event) => {
-  // 防止重复处理
-  if (isQuitting) return
-  
   // 停止主进程池 token 刷新调度器
   stopMainPoolTokenRefresh()
+
+  // Flush/close only the browser instances created for this feature.
+  if (kiroWebBrowser) {
+    event.preventDefault()
+    const web = kiroWebBrowser
+    kiroWebBrowser = null
+    await web.shutdown()
+    app.quit()
+    return
+  }
+
+  // Tray quit sets isQuitting before this event, but owned browsers must still close.
+  if (isQuitting) return
 
   // 防止应用立即退出，先保存数据
   if (lastSavedData && store) {
@@ -7307,7 +7226,7 @@ app.on('will-quit', async (event) => {
       console.log('[Exit] Saving data before quit...')
       // 刷新待写入的防抖数据
       flushStoreWrites()
-      store.set('accountData', lastSavedData)
+      saveAccountData(lastSavedData)
       // 退出场景跳过节流，确保备份立即落盘
       await createBackup(lastSavedData)
       await flushBackupNow()
