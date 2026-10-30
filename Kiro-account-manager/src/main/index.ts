@@ -31,7 +31,6 @@ import { proxyLogStore, interceptConsole } from './proxy/logger'
 import { registerIPCHandlers as registerRegistrationHandlers } from './registration/ipc-handlers'
 import { registerProxyPoolIpcHandlers } from './ipc/proxyPool'
 import { KiroWebBrowser } from './kiroWebBrowser'
-import { kiroIdeIsRunning } from './kiroWebBrowserLauncher'
 import { KiroWebCredentialCoordinator, configureKiroWebCredentials, coordinateManagerRefresh,
   mergeCredentialSnapshots, REFRESH_UNCERTAIN_ERROR, WebLoginError, type WebAccount } from './kiroWebCredentials'
 import {
@@ -1378,15 +1377,8 @@ function setupKiroWebBrowser(): void {
   const coordinator = new KiroWebCredentialCoordinator({
     directory: join(app.getPath('userData'), 'kiro-web', 'credentials'), accounts, encrypt,
     decrypt: bytes => safeStorage.decryptString(bytes),
-    beforeWebRefresh: async (account, latest) => {
-      const disk = await readKiroAuthTokenFile()
-      const sharesIde = lastSwitchedAccountId === account.id || data().activeAccountId === account.id ||
-        (disk && (disk.refreshToken === latest || disk.refreshToken === account.credentials.refreshToken ||
-          disk.accessToken === account.credentials.accessToken))
-      if (sharesIde && await kiroIdeIsRunning()) {
-        throw new WebLoginError('该账号正与运行中的 Kiro IDE 共用凭据；请先退出 IDE 再建立或续期网页会话')
-      }
-    },
+    // IDE process state does not block Web login or refresh.
+    beforeWebRefresh: async () => {},
     commit: async (account, head) => {
       const expected = account.credentials.refreshToken
       if (head.refreshToken !== expected && expected) await replaceKiroRefreshToken(expected, head.refreshToken)

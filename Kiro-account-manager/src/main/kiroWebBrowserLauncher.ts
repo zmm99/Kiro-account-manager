@@ -115,13 +115,3 @@ export async function launchKiroChrome(profile: string, proxy?: string, signal?:
     throw new WebLoginError('无法启动独立 Chrome；请确认浏览器已安装且该账号 Profile 未被占用')
   }
 }
-
-/** The independent IDE does not participate in our credential lease. Fail closed. */
-export async function kiroIdeIsRunning(): Promise<boolean> {
-  if (process.platform !== 'win32') return true
-  return new Promise(resolve => {
-    execFile('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 2000 }, (error, output) => {
-      resolve(!!error || /^"kiro(?: - insiders)?\.exe"/im.test(output))
-    })
-  })
-}
