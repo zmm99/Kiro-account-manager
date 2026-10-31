@@ -39,8 +39,9 @@ const unprotect = bytes => {
 let nextFixture = 0
 const fixture = async (options = {}) => {
   const directory = path.join(temporary, `fixture-${++nextFixture}`)
-  const account = { id: 'fixture-account', email: 'fixture@example.test', userId: 'fixture-user', idp: 'Github',
-    credentials: { provider: 'Github', authMethod: 'social', refreshToken: 'fixture-rt-0', accessToken: 'fixture-manager-at', expiresAt: 9000 } }
+  const provider = options.provider || 'Github'
+  const account = { id: 'fixture-account', email: 'fixture@example.test', userId: 'fixture-user', idp: provider,
+    credentials: { provider, authMethod: 'social', refreshToken: 'fixture-rt-0', accessToken: 'fixture-manager-at', expiresAt: 9000 } }
   const state = { account, commits: [], failCommit: false }
   const dependencies = { directory: path.join(directory, 'credentials'), accounts: () => [state.account], encrypt: protect, decrypt: unprotect,
     beforeWebRefresh: options.guard || (async () => {}),
@@ -54,8 +55,8 @@ const fixture = async (options = {}) => {
   return { directory, state, dependencies, coordinator: new KiroWebCredentialCoordinator(dependencies) }
 }
 
-test('Web and manager serialize the same lineage and never reuse the pre-rotation RT', async () => {
-  const f = await fixture()
+for (const provider of ['Github', 'Google']) test(`${provider}: Web and manager serialize the same lineage and never reuse the pre-rotation RT`, async () => {
+  const f = await fixture({ provider })
   let active = 0
   const web = f.coordinator.webRefresh('fixture-account', async token => {
     assert.equal(++active, 1); assert.equal(token, 'fixture-rt-0')
@@ -175,7 +176,7 @@ function fakeBrowser(f, options = {}) {
           if (url.endsWith('/RefreshToken')) {
             server.refreshCalls++
             assert.equal(jar.get('RefreshToken')?.value, server.rt)
-            assert.equal(jar.get('Idp')?.value, 'Github')
+            assert.equal(jar.get('Idp')?.value, f.state.account.credentials.provider)
             assert.equal(request.headers['X-CSRF-Token'], 'fixture-page-csrf')
             assert.equal(request.headers.Authorization, undefined)
             server.rt = `fixture-rt-${server.refreshCalls}`
@@ -183,7 +184,7 @@ function fakeBrowser(f, options = {}) {
             jar.set('AccessToken', { name: 'AccessToken', value: `fixture-web-at-${server.refreshCalls}`, domain: 'app.kiro.dev', path: '/' })
             return response(200, { accessToken: `fixture-web-at-${server.refreshCalls}`, csrfToken: 'fixture-new-csrf', expiresIn: 3600 })
           }
-          return response(200, { status: 'Active', idp: 'Github', email: 'fixture@example.test', userId: server.mismatch ? 'fixture-other-user' : 'fixture-user' })
+          return response(200, { status: 'Active', idp: server.providerOverride || f.state.account.credentials.provider, email: 'fixture@example.test', userId: server.mismatch ? 'fixture-other-user' : 'fixture-user' })
         }
       } }
     return { context, page, browser, pid: 1, close: async () => { server.closeCalls++; profiles.set(profile, [...jar.entries()]); browser.emit('disconnected') } }
@@ -193,8 +194,8 @@ function fakeBrowser(f, options = {}) {
   return { web, server, launches, routes, profiles, pages }
 }
 
-test('Web bootstrap rotates shared RT, preserves manager AT, reuses window and persists encrypted identity', async () => {
-  const f = await fixture(), mock = fakeBrowser(f)
+for (const provider of ['Github', 'Google']) test(`${provider}: Web bootstrap rotates shared RT, preserves manager AT, reuses window and persists encrypted identity`, async () => {
+  const f = await fixture({ provider }), mock = fakeBrowser(f)
   const result = await mock.web.open('fixture-account')
   assert.equal(result.success, true)
   assert.equal(f.state.account.credentials.refreshToken, 'fixture-rt-1')
@@ -213,8 +214,23 @@ test('Web bootstrap rotates shared RT, preserves manager AT, reuses window and p
   const binding = await fs.readFile(bindingFile)
   assert.equal(binding.includes(Buffer.from('fixture-user')), false)
   assert.equal(JSON.parse(unprotect(binding)).userId, 'fixture-user')
+  assert.equal(JSON.parse(unprotect(binding)).provider, provider)
   await mock.web.shutdown()
   assert.equal(mock.server.closeCalls, 1, 'synchronous disconnect must not reenter close')
+})
+
+test('Google identity cannot be accepted as Github and unsupported providers cannot launch', async () => {
+  const f = await fixture({ provider: 'Google' }), mock = fakeBrowser(f)
+  mock.server.providerOverride = 'Github'
+  const result = await mock.web.open('fixture-account')
+  assert.equal(result.success, false)
+  assert.match(result.error, /身份校验失败/)
+  assert.equal(f.state.account.credentials.refreshToken, 'fixture-rt-0')
+  await mock.web.shutdown()
+  const other = await fixture({ provider: 'BuilderId' }), blocked = fakeBrowser(other)
+  assert.equal((await blocked.web.open('fixture-account')).success, false)
+  assert.equal(blocked.launches.length, 0)
+  await blocked.web.shutdown()
 })
 
 test('double click shares startup; separate profile IDs remain path-safe', async () => {

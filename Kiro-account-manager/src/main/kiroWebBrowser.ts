@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { BrowserContext, Page } from 'playwright-core'
 import { launchKiroChrome, type ChromeRun } from './kiroWebBrowserLauncher'
-import { atomicPrivateWrite, tokenHash, WebLoginError, type WebAccount, type KiroWebCredentialCoordinator, type TokenRefreshResult } from './kiroWebCredentials'
+import { atomicPrivateWrite, tokenHash, WebLoginError, socialWebProvider, type WebAccount, type KiroWebCredentialCoordinator, type TokenRefreshResult } from './kiroWebCredentials'
 
 const ORIGIN = 'https://app.kiro.dev'
 const RPC = `${ORIGIN}/service/KiroWebPortalService/operation/`
@@ -16,6 +16,7 @@ interface Binding { userId: string; sourceHash: string; provider: string }
 interface PortalResult extends TokenRefreshResult { csrfToken?: string; data?: Record<string, unknown> }
 interface WebSession {
   accountId: string
+  provider: 'Github' | 'Google'
   run?: ChromeRun
   ready: Promise<OpenKiroWebResult>
   binding?: Binding
@@ -76,7 +77,7 @@ export class KiroWebBrowser {
   private async binding(account: WebAccount): Promise<Binding | undefined> {
     try {
       const value = JSON.parse(this.deps.decrypt(await readFile(this.filename(account.id, 'binding')))) as Binding
-      if (value.provider === 'Github' && await this.deps.coordinator.sameLineage(account.id, value.sourceHash)) return value
+      if (value.provider === socialWebProvider(account) && await this.deps.coordinator.sameLineage(account.id, value.sourceHash)) return value
       return undefined
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
@@ -88,8 +89,9 @@ export class KiroWebBrowser {
     if (this.stop.signal.aborted) return { success: false, error: '应用正在退出' }
     const account = this.deps.account(accountId)
     if (!account) return { success: false, error: '账号不存在' }
-    if ((account.credentials.provider || account.idp) !== 'Github') {
-      return { success: false, error: '当前版本仅支持已验证的 GitHub 账号网页登录' }
+    const provider = socialWebProvider(account)
+    if (!provider) {
+      return { success: false, error: '当前版本仅支持 GitHub / Google 账号网页登录' }
     }
     if (!account.credentials.refreshToken) return { success: false, error: '该账号缺少 Refresh Token' }
     const existing = this.sessions.get(accountId)
@@ -97,7 +99,7 @@ export class KiroWebBrowser {
       const result = await existing.ready
       if (!result.success) return result
       if (existing.closing || !existing.run) return { success: false, error: '该账号浏览器正在关闭，请稍后重试' }
-      if (existing.binding && !await this.deps.coordinator.sameLineage(accountId, existing.binding.sourceHash)) {
+      if (existing.provider !== provider || (existing.binding && !await this.deps.coordinator.sameLineage(accountId, existing.binding.sourceHash))) {
         await this.close(existing)
         return this.open(accountId)
       }
@@ -106,7 +108,7 @@ export class KiroWebBrowser {
       }
     }
     // Publish the placeholder before launching, so double clicks share this task.
-    const session: WebSession = { accountId, internalNonce: randomUUID(), ready: Promise.resolve({ success: false }) }
+    const session: WebSession = { accountId, provider, internalNonce: randomUUID(), ready: Promise.resolve({ success: false }) }
     this.sessions.set(accountId, session)
     session.ready = this.start(session, account).catch(async error => {
       try { await this.close(session) } catch { /* retain failed-close ownership */ }
@@ -167,7 +169,7 @@ export class KiroWebBrowser {
       const csrf = await this.bootstrap(session, page)
       if (csrf) {
         const info = await this.userInfo(session, page, csrf)
-        reused = info.status === 'Active' && info.userId === session.binding.userId && info.idp === 'Github'
+        reused = info.status === 'Active' && info.userId === session.binding.userId && info.idp === session.provider
       }
     }
     await cdp.send('Emulation.setScriptExecutionDisabled', { value: false })
@@ -231,9 +233,10 @@ export class KiroWebBrowser {
     const context = session.run!.context
     const current = this.deps.account(session.accountId)
     if (!current) throw new WebLoginError('账号已删除')
+    if (socialWebProvider(current) !== session.provider) throw new WebLoginError('账号登录提供商已变更，请重新打开网页')
     await context.addCookies([
       { name: 'RefreshToken', value: latest, url: ORIGIN, httpOnly: true, secure: true, sameSite: 'Lax' },
-      { name: 'Idp', value: 'Github', url: ORIGIN, httpOnly: true, secure: true, sameSite: 'Lax' }
+      { name: 'Idp', value: session.provider, url: ORIGIN, httpOnly: true, secure: true, sameSite: 'Lax' }
     ])
     if (!(await context.cookies(ORIGIN)).some(c => c.name === 'AccessToken')) {
       await context.addCookies([{ name: 'AccessToken', value: BOOTSTRAP_AT, url: ORIGIN,
@@ -261,13 +264,13 @@ export class KiroWebBrowser {
       throw new WebLoginError('Kiro Web 刷新响应不完整，已保留恢复记录')
     }
     const info = await this.userInfo(session, host, data.csrfToken)
-    if (info.status !== 'Active' || info.idp !== 'Github' || typeof info.userId !== 'string' ||
+    if (info.status !== 'Active' || info.idp !== session.provider || typeof info.userId !== 'string' ||
       (current.userId && info.userId !== current.userId) ||
       (session.binding && info.userId !== session.binding.userId) ||
       (!current.userId && current.email && String(info.email || '').toLowerCase() !== current.email.toLowerCase())) {
       throw new WebLoginError('网页账号身份校验失败，已停止登录并保留恢复记录')
     }
-    session.binding = { userId: info.userId, sourceHash: tokenHash(refreshToken), provider: 'Github' }
+    session.binding = { userId: info.userId, sourceHash: tokenHash(refreshToken), provider: session.provider }
     await this.save(session.accountId, 'binding', session.binding)
     return { success: true, accessToken: data.accessToken, refreshToken,
       csrfToken: data.csrfToken, expiresIn: typeof data.expiresIn === 'number' ? data.expiresIn : 3600, data }

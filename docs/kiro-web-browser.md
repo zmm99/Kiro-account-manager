@@ -2,7 +2,7 @@
 
 账号卡片操作栏新增地球图标。点击后，管理器为该账号启动独立 Chrome Profile，使用账号现有 Refresh Token 建立网页会话，并打开 `https://app.kiro.dev/home`。重复点击聚焦现有窗口，关闭窗口不会删除 Profile。管理器完全退出时会关闭自己启动的浏览器。
 
-当前实现支持 Windows、已安装的 Google Chrome，以及带 Refresh Token 的 GitHub 账号。支持无用户名密码的 HTTP/HTTPS/SOCKS 账号代理；带认证的代理会明确报错。此次没有生成安装包。
+当前实现支持 Windows、已安装的 Google Chrome，以及带 Refresh Token 的 GitHub / Google 账号。支持无用户名密码的 HTTP/HTTPS/SOCKS 账号代理；带认证的代理会明确报错。
 
 ## 此 fork 的更新与本地打包
 
@@ -14,8 +14,8 @@
 
 - 前端 IPC 只发送账号 ID，新增流程不把 Token 放进命令行或错误日志。
 - 每个账号独立保存 Profile，目录名为账号 ID 的 SHA-256，位于 Electron `userData/kiro-web/profiles`。
-- 首次登录先访问 Kiro 同源页面，以占位 AT、当前 RT、`Idp=Github` 请求主页取得 CSRF，再通过浏览器原生 `fetch` 调用 `RefreshToken`。不主动填写 UserId；保留服务器后续发放的 UserId Cookie。
-- 使用 `GetUserInfo` 验证 Active 状态、GitHub 提供商及账号身份，然后打开首页。服务端拒绝凭据或账号状态异常时停止。
+- 首次登录先访问 Kiro 同源页面，写入占位 AT、当前 RT，并按账号提供商设置 `Idp=Github` 或 `Idp=Google`，请求主页取得 CSRF，再通过浏览器原生 `fetch` 调用 `RefreshToken`。不主动填写 UserId；保留服务器后续发放的 UserId Cookie。
+- 使用 `GetUserInfo` 验证 Active 状态、提供商与所选账号一致及账号身份，然后打开首页。服务端拒绝凭据或账号状态异常时停止。
 - 复用有效 Profile 时直接验证身份，不无条件消耗 RT。
 - 管理器与网页沿用同一条 RT 链，通过主进程协调器串行刷新。网页自动发出的 `RefreshToken` 也进入协调器；同一窗口的并发刷新合并为一次。网页 AT 保留在网页，管理器/IDE AT 保留各自用途。
 - 新 RT 在提交账号存储前先写入系统加密保护的恢复记录。待处理状态在请求前落盘；网络中断、崩溃或结果不确定时阻止旧 RT 自动重放。完整成功记录可在下次刷新前恢复提交；不完整记录需要人工恢复或重新授权，当前没有专门的恢复界面。
@@ -51,3 +51,7 @@
 本次实现验证使用模拟凭据与模拟接口，没有读取或刷新生产账号 RT，也没有对完整 Electron 程序进行真实账号验收。此前独立测试账号的最小参数研究与本次自动化测试的证据范围不同；原始研究记录只在本地保存，不纳入仓库。
 
 下一步实际验收应继续使用可消耗的独立测试账号，确认首次打开、网页自动续期、管理器再次刷新、关闭重开均成功，再考虑将其用于日常账号。
+
+## Google 支持（2026-10-31）
+
+Google 与 GitHub 复用同一浏览器流程及 RT 协调器。独立 Google 测试会话已实际验证：仅真实 RT，配合 Idp=Google、占位 AT 和主页 CSRF，可成功刷新，GetUserInfo 返回 Active/Google，首页识别为 active。该次 RT 未变化，不代表后续不会轮换。此次适配后的回归测试使用模拟凭据，不再消耗真实 RT。

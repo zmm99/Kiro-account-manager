@@ -18,6 +18,11 @@ export interface WebAccount {
   }
 }
 
+export function socialWebProvider(account: WebAccount): 'Github' | 'Google' | undefined {
+  const provider = account.credentials.provider || account.idp
+  return provider === 'Github' || provider === 'Google' ? provider : undefined
+}
+
 export interface TokenRefreshResult {
   success: boolean
   refreshToken?: string
@@ -132,7 +137,7 @@ export class KiroWebCredentialCoordinator {
 
   async managerRefresh<T extends TokenRefreshResult>(token: string, run: (latest: string) => Promise<T>): Promise<T> {
     const account = await this.findAccount(token)
-    if (!account || this.provider(account) !== 'Github') return this.lock(`untracked:${tokenHash(token)}`, () => run(token))
+    if (!account || !socialWebProvider(account)) return this.lock(`untracked:${tokenHash(token)}`, () => run(token))
     const existing = this.managerTasks.get(account.id)
     if (existing) return existing as Promise<T>
     const task = this.refresh(account.id, 'manager', run)

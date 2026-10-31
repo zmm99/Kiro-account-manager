@@ -203,7 +203,7 @@ export const AccountCard = memo(function AccountCard({
   const [isOpeningWeb, setIsOpeningWeb] = useState(false)
   const [webOpenError, setWebOpenError] = useState<string | null>(null)
   const webProvider = account.credentials.provider || account.idp
-  const canOpenWeb = webProvider === 'Github' && !!account.credentials.refreshToken
+  const canOpenWeb = (webProvider === 'Github' || webProvider === 'Google') && !!account.credentials.refreshToken
 
   const handleOpenWeb = async (): Promise<void> => {
     if (isOpeningWeb) return
@@ -863,7 +863,7 @@ export const AccountCard = memo(function AccountCard({
                <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground"
                  onClick={(e) => { e.stopPropagation(); void handleOpenWeb() }} disabled={!canOpenWeb || isOpeningWeb}
                  aria-label={isEn ? 'Open Kiro Web in browser' : '在浏览器打开 Kiro Web'}
-                 title={!canOpenWeb ? (isEn ? 'Requires a GitHub account with a Refresh Token' : '需要带 Refresh Token 的 GitHub 账号') : (isEn ? 'Open Kiro Web in browser' : '在浏览器打开 Kiro Web')}>
+                 title={!canOpenWeb ? (isEn ? 'Requires a GitHub or Google account with a Refresh Token' : '需要带 Refresh Token 的 GitHub / Google 账号') : (isEn ? 'Open Kiro Web in browser' : '在浏览器打开 Kiro Web')}>
                   {isOpeningWeb ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
                </Button>
                <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); handleRefresh() }} disabled={account.status === 'refreshing'} title={isEn ? 'Check account info' : '检查账户信息（用量、订阅、封禁状态）'}>
