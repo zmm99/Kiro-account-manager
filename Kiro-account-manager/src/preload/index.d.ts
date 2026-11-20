@@ -539,7 +539,7 @@ interface KiroApi {
 
   // 监听更新事件
   onUpdateChecking: (callback: () => void) => () => void
-  onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => () => void
+  onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string; releaseUrl?: string }) => void) => () => void
   onUpdateNotAvailable: (callback: (info: { version: string }) => void) => () => void
   onUpdateDownloadProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => () => void
   onUpdateDownloaded: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void) => () => void

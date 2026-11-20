@@ -35,15 +35,12 @@ export function AboutPage() {
   const { darkMode } = useAccountsStore()
   const { t } = useTranslation()
   const isEn = t('common.unknown') === 'Unknown'
-  const updatesEnabled = false // This fork is installed and updated manually.
 
   useEffect(() => {
     window.api.getAppVersion().then(setVersion)
-    // Updates are disabled for this fork.
   }, [])
 
   const checkForUpdates = async (showModal = true) => {
-    if (!updatesEnabled) return
     setIsCheckingUpdate(true)
     try {
       const result = await window.api.checkForUpdatesManual()
@@ -92,10 +89,10 @@ export function AboutPage() {
             size="sm"
             className="gap-2"
             onClick={() => checkForUpdates(true)}
-            disabled={!updatesEnabled || isCheckingUpdate}
+            disabled={isCheckingUpdate}
           >
             <RefreshCw className={cn("h-4 w-4", isCheckingUpdate && "animate-spin")} />
-            {!updatesEnabled ? (isEn ? 'Updates disabled' : '更新已关闭') : isCheckingUpdate ? (isEn ? 'Checking...' : '检查中...') : (isEn ? 'Check Updates' : '检查更新')}
+            {isCheckingUpdate ? (isEn ? 'Checking...' : '检查中...') : (isEn ? 'Check Updates' : '检查更新')}
           </Button>
           <Button
             variant="outline"
@@ -380,13 +377,13 @@ export function AboutPage() {
               <p className="font-medium">chaogei666</p>
             </div>
             <a 
-              href="https://github.com/chaogei/Kiro-account-manager" 
+              href="https://github.com/zmm99/Kiro-account-manager"
               target="_blank" 
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-lg hover:bg-muted"
             >
               <Github className="h-4 w-4" />
-              GitHub
+              {isEn ? 'Project on GitHub' : '项目仓库'}
               <ExternalLink className="h-3 w-3" />
             </a>
           </div>

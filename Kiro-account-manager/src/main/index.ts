@@ -30,6 +30,7 @@ import { getSystemProxy, safeCreateProxyAgent } from './proxy/systemProxy'
 import { proxyLogStore, interceptConsole } from './proxy/logger'
 import { registerIPCHandlers as registerRegistrationHandlers } from './registration/ipc-handlers'
 import { registerProxyPoolIpcHandlers } from './ipc/proxyPool'
+import { registerAppUpdates } from './appUpdates'
 import { KiroWebBrowser } from './kiroWebBrowser'
 import { KiroWebCredentialCoordinator, configureKiroWebCredentials, coordinateManagerRefresh,
   mergeCredentialSnapshots, REFRESH_UNCERTAIN_ERROR, WebLoginError, type WebAccount } from './kiroWebCredentials'
@@ -44,8 +45,6 @@ import {
   type TraySettings,
   defaultTraySettings
 } from './tray'
-
-// This fork is updated by installing a locally built package.
 
 // ============ Kiro API 调用 ============
 const KIRO_API_BASE = 'https://app.kiro.dev/service/KiroWebPortalService/operation'
@@ -2025,6 +2024,7 @@ function stopMainPoolTokenRefresh(): void {
 // ============ 托盘相关变量 ============
 let traySettings: TraySettings = { ...defaultTraySettings }
 let isQuitting = false // 标记是否真正退出应用
+let isInstallingUpdate = false
 
 // ============ 全局快捷键设置 ============
 let showWindowShortcut = process.platform === 'darwin' ? 'Command+Shift+K' : 'Ctrl+Shift+K'
@@ -2335,7 +2335,7 @@ function createWindow(): void {
 
   mainWindow.on('close', (event) => {
     // 托盘最小化逻辑 - 必须同步检查并调用 preventDefault
-    if (traySettings.enabled && !isQuitting) {
+    if (traySettings.enabled && !isQuitting && !isInstallingUpdate) {
       if (traySettings.closeAction === 'minimize') {
         // 直接最小化到托盘
         event.preventDefault()
@@ -2606,15 +2606,9 @@ app.whenReady().then(async () => {
     return app.getVersion()
   })
 
-  // Keep the preload API compatible, but disable every updater entry point.
-  // Do not load electron-updater or attach its cached-update install-on-quit hook.
-  const updatesDisabled = '此分支已关闭更新，请手动安装本地编译版本'
-  ipcMain.handle('check-for-updates', () => ({ hasUpdate: false, message: updatesDisabled }))
-  ipcMain.handle('check-for-updates-manual', () => ({
-    hasUpdate: false, currentVersion: app.getVersion(), error: updatesDisabled
-  }))
-  ipcMain.handle('download-update', () => ({ success: false, error: updatesDisabled }))
-  ipcMain.handle('install-update', () => undefined)
+  const checkForUpdatesOnLaunch = registerAppUpdates(() => mainWindow, fetchWithAppProxy, () => {
+    isInstallingUpdate = true
+  })
 
   // ============ 一键诊断 ============
   /**
@@ -7127,6 +7121,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  mainWindow?.webContents.once('did-finish-load', checkForUpdatesOnLaunch)
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

@@ -506,8 +506,8 @@ const api = {
     return () => ipcRenderer.removeListener('update-checking', handler)
   },
 
-  onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string }) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, info: { version: string; releaseDate?: string; releaseNotes?: string }): void => callback(info)
+  onUpdateAvailable: (callback: (info: { version: string; releaseDate?: string; releaseNotes?: string; releaseUrl?: string }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, info: Parameters<typeof callback>[0]): void => callback(info)
     ipcRenderer.on('update-available', handler)
     return () => ipcRenderer.removeListener('update-available', handler)
   },

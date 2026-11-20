@@ -292,6 +292,12 @@ npx electron-builder --linux --arm64
 
 ## 📋 更新日志
 
+### v2.0.1 (2026-11-20) — 恢复应用内更新
+
+- 启动时自动检查更新，也可在「关于」页面手动检查。更新源为 `zmm99/Kiro-account-manager` 的 GitHub Release。
+- Windows 按安装包架构读取对应的更新清单。未签名的 macOS 包和 Snap 提供 Release 下载入口。
+- 已安装 v2.0.0 的用户需手动下载并安装一次 v2.0.1，之后即可在应用内检查更新。
+
 
 ### v1.7.5 (2026-6-7) — 思考模式支持 + Enterprise profileArn 完整修复 + Agent 模式与 Steering + 工具调用泄漏修复
 
@@ -1296,7 +1302,7 @@ npx electron-builder --linux --arm64
 ## 👨‍💻 作者
 
 - **GitHub**: [chaogei](https://github.com/chaogei)
-- **项目主页**: [Kiro-account-manager](https://github.com/chaogei/Kiro-account-manager)
+- **项目主页**: [Kiro-account-manager](https://github.com/zmm99/Kiro-account-manager)
 
 ---
 

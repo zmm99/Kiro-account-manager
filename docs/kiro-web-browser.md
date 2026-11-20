@@ -6,7 +6,7 @@
 
 ## 此 fork 的更新与本地打包
 
-本地 `origin` 指向 `zmm99/Kiro-account-manager`。该分支关闭应用启动更新检查、手动检查、下载和安装更新；不再加载 `electron-updater`，关于页面显示“更新已关闭”。升级时手动安装新编译的版本。构建配置的 GitHub 发布目标也已改为该 fork。
+从 v2.0.1 开始，应用启动时会检查 `zmm99/Kiro-account-manager` 的 GitHub Release，关于页面也可以手动检查。支持应用内安装的包会在用户确认后下载和安装更新。macOS 和 Snap 提供下载页面。v2.0.0 用户需要手动安装一次 v2.0.1。
 
 在嵌套的 `Kiro-account-manager` 项目目录内，依次执行 `npm run build` 和 `npx electron-builder --win nsis --x64 --publish never`，仅生成本地安装包，不上传 Release。安装前导出账号备份并退出托盘中的旧程序。
 

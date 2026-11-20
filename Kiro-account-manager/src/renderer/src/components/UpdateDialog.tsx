@@ -8,6 +8,7 @@ interface UpdateInfo {
   version: string
   releaseDate?: string
   releaseNotes?: string
+  releaseUrl?: string
 }
 
 interface DownloadProgress {
@@ -68,9 +69,19 @@ export function UpdateDialog() {
   }, [])
 
   const handleDownload = async () => {
+    if (updateInfo?.releaseUrl) {
+      window.api.openExternal(updateInfo.releaseUrl)
+      return
+    }
     setStatus('downloading')
     setProgress(null)
-    await window.api.downloadUpdate()
+    try {
+      const result = await window.api.downloadUpdate()
+      if (!result.success) throw new Error(result.error || '下载更新失败')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '下载更新失败')
+      setStatus('error')
+    }
   }
 
   const handleInstall = () => {
@@ -133,10 +144,9 @@ export function UpdateDialog() {
                 新版本已发布，建议立即更新以获得最新功能和修复。
               </p>
               {updateInfo?.releaseNotes && (
-                <div 
-                  className="bg-muted/50 rounded-lg p-3 max-h-32 overflow-y-auto text-xs text-muted-foreground prose prose-sm prose-neutral dark:prose-invert max-w-none [&_ul]:list-disc [&_ul]:pl-4 [&_li]:my-0.5 [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_p]:my-1 [&_hr]:my-2"
-                  dangerouslySetInnerHTML={{ __html: updateInfo.releaseNotes }}
-                />
+                <div className="bg-muted/50 rounded-lg p-3 max-h-32 overflow-y-auto text-xs text-muted-foreground whitespace-pre-wrap break-words">
+                  {updateInfo.releaseNotes}
+                </div>
               )}
               <div className="flex gap-3">
                 <Button variant="outline" className="flex-1" onClick={handleClose}>
@@ -144,7 +154,7 @@ export function UpdateDialog() {
                 </Button>
                 <Button className="flex-1" onClick={handleDownload}>
                   <Download className="h-4 w-4 mr-2" />
-                  立即下载
+                  {updateInfo?.releaseUrl ? '打开下载页面' : '立即下载'}
                 </Button>
               </div>
             </>
@@ -196,7 +206,7 @@ export function UpdateDialog() {
           {status === 'error' && (
             <>
               <p className="text-sm text-destructive">
-                更新检查失败: {error}
+                更新失败：{error}
               </p>
               <Button variant="outline" className="w-full" onClick={handleClose}>
                 关闭

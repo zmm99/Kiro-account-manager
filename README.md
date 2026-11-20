@@ -287,6 +287,12 @@ The project is configured with GitHub Actions workflow for auto building all pla
 
 ## 📋 Changelog
 
+### v2.0.1 (2026-11-20) — Restore in-app updates
+
+- Check for updates on startup or from the About page using the `zmm99/Kiro-account-manager` GitHub releases.
+- Windows installers check an update manifest for their own architecture. Unsigned macOS and Snap builds open the release download page.
+- If you installed v2.0.0, download and install v2.0.1 manually to enable future update checks.
+
 
 ### v1.7.5 (2026-6-7) — Thinking Mode + Enterprise profileArn Full Fix + Agent Mode & Steering + Tool Use Leak Fix
 
@@ -1288,7 +1294,7 @@ This project is licensed under the [AGPL-3.0 License](LICENSE).
 ## 👨‍💻 Author
 
 - **GitHub**: [chaogei](https://github.com/chaogei)
-- **Project Homepage**: [Kiro-account-manager](https://github.com/chaogei/Kiro-account-manager)
+- **Project Homepage**: [Kiro-account-manager](https://github.com/zmm99/Kiro-account-manager)
 
 ---
 

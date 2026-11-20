@@ -22,11 +22,18 @@ protocols:
   schemes:
     - kiro
 copyright: Copyright 2026 Kiro
+publish: &githubRelease
+  provider: github
+  owner: zmm99
+  repo: Kiro-account-manager
 win:
   executableName: kiro-account-manager
   icon: resources/icon.ico
   legalTrademarks: Copyright 2026 Kiro
   requestedExecutionLevel: asInvoker
+  publish:
+    <<: *githubRelease
+    channel: latest-win-${arch}
 nsis:
   artifactName: ${name}-${version}-${arch}-setup.${ext}
   shortcutName: Kiro 账号管理器
@@ -78,11 +85,5 @@ deb:
 appImage:
   artifactName: ${name}-${version}-${arch}.${ext}
 snap:
-  publish:
-    provider: generic
-    url: https://example.com/auto-updates
+  publish: *githubRelease
 npmRebuild: false
-publish:
-  provider: github
-  owner: zmm99
-  repo: Kiro-account-manager
