@@ -422,7 +422,7 @@ npx electron-builder --linux --arm64
 #### 🔧 构建 / 发布
 
 - **修复**: 🔥 **macOS 自动更新 404** — `electron-builder` 默认行为下 mac zip 文件名把 `productName` 中的空格替换成 `.`（生成 `Kiro.Account.Manager-1.7.2-mac.zip`），但 `latest-mac.yml` 里的 `url` 字段把空格替换成 `-`（指向 `Kiro-Account-Manager-1.7.2-mac.zip`），两者 mismatch → updater 下载 404。`electron-builder.yml` 新增 `mac.artifactName: ${name}-${version}-${arch}-mac.${ext}` 与显式 `target: zip/dmg × [x64, arm64]`，让所有平台命名统一为 `kiro-account-manager-…` 风格，并让 `latest-mac.yml` 同时包含 x64 + arm64 双入口，Apple Silicon 用户能拿到 arm64 原生包
-- **注意**: 现有 v1.7.2 macOS 用户因上述 bug 仍无法自动升级到 v1.7.3，请到 [Releases](https://github.com/chaogei/Kiro-account-manager/releases/latest) 手动下载对应 dmg/zip 安装一次
+- **注意**: 现有 v1.7.2 macOS 用户因上述 bug 仍无法自动升级到 v1.7.3，请到 [Releases](https://github.com/zmm99/Kiro-account-manager/releases/latest) 手动下载对应 dmg/zip 安装一次
 
 #### 🎨 UI / 细节调整
 

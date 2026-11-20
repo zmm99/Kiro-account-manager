@@ -417,7 +417,7 @@ The project is configured with GitHub Actions workflow for auto building all pla
 #### 🔧 Build / Release
 
 - **Fix**: 🔥 **macOS auto-update 404** — by default, `electron-builder` replaces spaces in `productName` with `.` for the mac zip filename (yielding `Kiro.Account.Manager-1.7.2-mac.zip`), but the `url` field in `latest-mac.yml` replaces spaces with `-` (pointing at `Kiro-Account-Manager-1.7.2-mac.zip`). The mismatch caused updater 404. `electron-builder.yml` now sets `mac.artifactName: ${name}-${version}-${arch}-mac.${ext}` and explicit `target: zip/dmg × [x64, arm64]`, unifying naming to `kiro-account-manager-…` across platforms and making `latest-mac.yml` include both x64 and arm64 entries so Apple Silicon users get a native arm64 build
-- **Note**: Existing v1.7.2 macOS users cannot auto-upgrade to v1.7.3 due to the above bug; please download the matching dmg/zip from [Releases](https://github.com/chaogei/Kiro-account-manager/releases/latest) manually one time
+- **Note**: Existing v1.7.2 macOS users cannot auto-upgrade to v1.7.3 due to the above bug; please download the matching dmg/zip from [Releases](https://github.com/zmm99/Kiro-account-manager/releases/latest) manually one time
 
 #### 🎨 UI / Detail Tweaks
 
