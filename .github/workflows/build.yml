@@ -56,7 +56,7 @@ jobs:
 
   build-windows:
     needs: get-version
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       matrix:
         arch: [x64, ia32]
@@ -106,7 +106,7 @@ jobs:
 
   build-windows-arm64:
     needs: get-version
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -150,6 +150,33 @@ jobs:
             ${{ env.WORKING_DIR }}/dist/*.yml
             ${{ env.WORKING_DIR }}/dist/*.blockmap
           if-no-files-found: ignore
+
+  compare-windows-latest:
+    needs: get-version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install setuptools (for node-gyp)
+        run: pip install setuptools
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ env.WORKING_DIR }}
+        run: npm ci
+
 
   build-macos:
     needs: get-version
@@ -295,12 +322,15 @@ jobs:
           ls -lh release-assets/
 
       - name: Create Release
+        if: github.repository == 'zmm99/Kiro-account-manager' && github.ref == 'refs/heads/codex/verify-upstream-release-20261120'
         uses: softprops/action-gh-release@v1
         with:
-          name: Kiro Account Manager v${{ needs.get-version.outputs.version }}
-          tag_name: ${{ needs.get-version.outputs.tag_name }}
-          draft: false
-          prerelease: false
+          name: CI verification draft v${{ needs.get-version.outputs.version }}
+          tag_name: ${{ needs.get-version.outputs.tag_name }}-ci-check-20261120
+          target_commitish: ${{ github.sha }}
+          draft: true
+          prerelease: true
+          fail_on_unmatched_files: true
           generate_release_notes: false
           body: |
             ## 🌟 更新内容 | What's New
