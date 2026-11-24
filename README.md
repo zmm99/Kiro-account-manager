@@ -287,6 +287,11 @@ The project is configured with GitHub Actions workflow for auto building all pla
 
 ## 📋 Changelog
 
+### v2.0.3 (2026-11-24) — Fix account card refresh
+
+- A damaged Kiro Web credential record for another account could prevent a GitHub or Google token refresh. Ordinary refreshes now use the selected account's refresh token directly. An open Kiro Web window still coordinates refreshes that share that token.
+- The account card shows the completion time after a successful token refresh or account info check. Use the key button to renew the token and the circular arrow to check usage and active bonus credits.
+
 ### v2.0.2 (2026-11-24) — Retry token refresh after a timeout
 
 - If a refresh times out, you can keep using your current access token while it is valid. Manual and scheduled refreshes can retry, including for accounts flagged by an earlier version.
