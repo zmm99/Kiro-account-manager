@@ -680,7 +680,9 @@ async function refreshSocialToken(
       const errorText = await response.text()
       const code = ['AccountSuspendedException', 'InvalidGrantException', 'InvalidTokenException', 'invalid_grant']
         .find(value => errorText.includes(value))
-      return { success: false, error: `HTTP ${response.status}${code ? `: ${code}` : ''}` }
+      const error = `HTTP ${response.status}${code ? `: ${code}` : ''}`
+      console.warn('[Social] Refresh failed:', error)
+      return { success: false, error }
     }
     
     const data = await response.json()
@@ -693,6 +695,7 @@ async function refreshSocialToken(
       expiresIn: data.expiresIn
     }
   } catch (error) {
+    console.warn('[Social] Refresh request failed:', error instanceof Error ? error.name : 'Unknown error')
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
 }

@@ -71,6 +71,7 @@ export async function atomicPrivateWrite(file: string, data: Buffer | string): P
 export class KiroWebCredentialCoordinator {
   private tails = new Map<string, Promise<void>>()
   private heads = new Map<string, CredentialHead>()
+  private webTokens = new Map<string, Set<string>>()
   private managerTasks = new Map<string, Promise<TokenRefreshResult>>()
   constructor(private deps: CredentialDependencies) {}
 
@@ -101,6 +102,8 @@ export class KiroWebCredentialCoordinator {
   private async writeHead(head: CredentialHead): Promise<void> {
     // Retain the confirmed rotation for the next attempt even if the disk write fails.
     this.heads.set(head.accountId, head)
+    const active = this.webTokens.get(head.accountId)
+    if (active) for (const hash of head.hashes) active.add(hash)
     await fs.mkdir(this.deps.directory, { recursive: true })
     // Encryption has no plaintext fallback.
     await atomicPrivateWrite(this.filename(head.accountId), this.deps.encrypt(JSON.stringify(head)))
@@ -119,25 +122,29 @@ export class KiroWebCredentialCoordinator {
     }
   }
 
-  private async findAccount(token: string): Promise<WebAccount | undefined> {
-    const hash = tokenHash(token)
-    for (const account of this.deps.accounts()) {
-      if (account.credentials.refreshToken === token) return account
-      const head = await this.readHead(account)
-      if (head?.hashes.includes(hash)) return account
-    }
-    return undefined
+  closeWebAccount(id: string): void {
+    this.webTokens.delete(id)
   }
 
   async managerRefresh<T extends TokenRefreshResult>(token: string, run: (latest: string) => Promise<T>): Promise<T> {
-    const account = await this.findAccount(token)
-    if (!account || !socialWebProvider(account)) return this.lock(`untracked:${tokenHash(token)}`, () => run(token))
-    const existing = this.managerTasks.get(account.id)
+    const hash = tokenHash(token)
+    let owner: string | undefined
+    for (const [id, hashes] of this.webTokens) {
+      if (!hashes.has(hash)) continue
+      const current = this.deps.accounts().find(a => a.id === id)?.credentials.refreshToken
+      if (current && hashes.has(tokenHash(current))) { owner = id; break }
+    }
+    const key = owner ? `web:${owner}` : hash
+    const existing = this.managerTasks.get(hash) || this.managerTasks.get(key)
     if (existing) return existing as Promise<T>
-    const task = this.refresh(account.id, 'manager', run)
-    this.managerTasks.set(account.id, task)
-    void task.finally(() => { if (this.managerTasks.get(account.id) === task) this.managerTasks.delete(account.id) }).catch(() => {})
-    return task
+    // A normal manager refresh uses the upstream caller's token and persistence path.
+    const task = owner ? this.refresh(owner, 'manager', run) : run(token)
+    this.managerTasks.set(hash, task)
+    this.managerTasks.set(key, task)
+    try { return await task } finally {
+      this.managerTasks.delete(hash)
+      this.managerTasks.delete(key)
+    }
   }
 
   async sameLineage(id: string, hash: string): Promise<boolean> {
@@ -147,18 +154,36 @@ export class KiroWebCredentialCoordinator {
   }
 
   async webRefresh<T extends TokenRefreshResult>(id: string, run: (latest: string) => Promise<T>): Promise<T> {
+    const token = this.deps.accounts().find(a => a.id === id)?.credentials.refreshToken
+    if (!token) throw new WebLoginError('账号不存在或缺少 Refresh Token')
+    const hash = tokenHash(token)
+    if (!this.webTokens.get(id)?.has(hash)) this.webTokens.set(id, new Set([hash]))
+    const inFlight = this.managerTasks.get(hash)
+    if (inFlight && inFlight !== this.managerTasks.get(`web:${id}`)) {
+      // The manager started before this window. Adopt its confirmed rotation
+      // before the renderer has necessarily persisted the IPC result.
+      const result = await inFlight
+      if (result.success && result.accessToken) {
+        await this.refresh(id, 'manager', async latest => latest === token ? result : { success: false })
+      }
+    }
     return this.refresh(id, 'web', run)
   }
 
   private async refresh<T extends TokenRefreshResult>(id: string, kind: 'manager' | 'web', run: (rt: string) => Promise<T>): Promise<T> {
-    const selected = this.deps.accounts().find(a => a.id === id)
+    const accounts = this.deps.accounts()
+    const selected = accounts.find(a => a.id === id)
     if (!selected?.credentials.refreshToken) throw new WebLoginError('账号不存在或缺少 Refresh Token')
+    const selectedToken = selected.credentials.refreshToken
     // Duplicate imported rows sharing an RT also share the same lease.
-    const canonical = await this.findAccount(selected.credentials.refreshToken)
+    const canonical = accounts.find(a => a.credentials.refreshToken === selectedToken)
     return this.lock(canonical?.id || id, async () => {
       let account = this.deps.accounts().find(a => a.id === id)
       if (!account?.credentials.refreshToken) throw new WebLoginError('账号已删除或凭据已变更')
       const previous = await this.readHead(account)
+      if (selectedToken !== account.credentials.refreshToken && !previous?.hashes.includes(tokenHash(selectedToken))) {
+        throw new WebLoginError('刷新期间账号凭据已变更，请重试')
+      }
       // Older versions also journaled in-flight attempts. Only a newer revision
       // carries credentials to recover; the legacy pending flag does not affect retries.
       if (previous && previous.revision > (account.credentials.credentialRevision || 0)) {

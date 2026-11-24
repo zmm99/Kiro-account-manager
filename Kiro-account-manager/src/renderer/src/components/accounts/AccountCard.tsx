@@ -304,9 +304,23 @@ export const AccountCard = memo(function AccountCard({
     }
   }
 
-  const handleRefresh = async (): Promise<void> => {
-    // 获取最新的使用量数据
-    await checkAccountStatus(account.id)
+  const [pendingAction, setPendingAction] = useState<'token' | 'info' | null>(null)
+  const [refreshFeedback, setRefreshFeedback] = useState('')
+  const handleRefresh = async (action: 'token' | 'info'): Promise<void> => {
+    if (pendingAction) return
+    setPendingAction(action)
+    setRefreshFeedback('')
+    try {
+      const ok = action === 'token' ? await refreshAccountToken(account.id) : await checkAccountStatus(account.id)
+      if (ok) {
+        const message = action === 'token'
+          ? (isEn ? 'Token refreshed' : 'Token 已刷新')
+          : (isEn ? 'Account info updated' : '账户信息已更新')
+        setRefreshFeedback(`${message} · ${new Date().toLocaleTimeString()}`)
+      }
+    } finally {
+      setPendingAction(null)
+    }
   }
 
   const handleLogout = async (): Promise<void> => {
@@ -321,16 +335,6 @@ export const AccountCard = memo(function AccountCard({
       alert(isEn ? `Logged out successfully, cleared ${result.deletedCount} cache files` : `退出成功，已清除 ${result.deletedCount} 个缓存文件`)
     } else {
       alert(isEn ? `Logout failed: ${result.error}` : `退出失败: ${result.error}`)
-    }
-  }
-
-  const [isRefreshingToken, setIsRefreshingToken] = useState(false)
-  const handleRefreshToken = async (): Promise<void> => {
-    setIsRefreshingToken(true)
-    try {
-      await refreshAccountToken(account.id)
-    } finally {
-      setIsRefreshingToken(false)
     }
   }
 
@@ -866,11 +870,11 @@ export const AccountCard = memo(function AccountCard({
                  title={!canOpenWeb ? (isEn ? 'Requires a GitHub or Google account with a Refresh Token' : '需要带 Refresh Token 的 GitHub / Google 账号') : (isEn ? 'Open Kiro Web in browser' : '在浏览器打开 Kiro Web')}>
                   {isOpeningWeb ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
                </Button>
-               <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); handleRefresh() }} disabled={account.status === 'refreshing'} title={isEn ? 'Check account info' : '检查账户信息（用量、订阅、封禁状态）'}>
-                  <RefreshCw className={cn("h-3.5 w-3.5", account.status === 'refreshing' && "animate-spin")} />
+               <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); void handleRefresh('info') }} disabled={pendingAction !== null} title={isEn ? 'Check account info' : '检查账户信息（用量、订阅、封禁状态）'}>
+                  <RefreshCw className={cn("h-3.5 w-3.5", pendingAction === 'info' && "animate-spin")} />
                </Button>
-               <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); handleRefreshToken() }} disabled={isRefreshingToken} title={isEn ? 'Refresh Token' : '刷新 Token（仅刷新访问令牌）'}>
-                  <KeyRound className={cn("h-3.5 w-3.5", isRefreshingToken && "animate-pulse")} />
+               <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); void handleRefresh('token') }} disabled={pendingAction !== null} title={isEn ? 'Refresh Token' : '刷新 Token（仅刷新访问令牌）'}>
+                  <KeyRound className={cn("h-3.5 w-3.5", pendingAction === 'token' && "animate-pulse")} />
                </Button>
                
                <Button size="icon" variant="ghost" className={cn("h-7 w-7 text-muted-foreground hover:text-foreground", copied && "text-success")} onClick={(e) => { e.stopPropagation(); handleCopyCredentials() }} title={isEn ? 'Copy credentials' : '复制凭证'}>
@@ -891,6 +895,7 @@ export const AccountCard = memo(function AccountCard({
             </div>
         </div>
 
+        {refreshFeedback && !account.lastError && <div role="status" className="text-muted-foreground text-[10px] mt-1">{refreshFeedback}</div>}
         {webOpenError && <div role="alert" className="text-destructive text-[10px] mt-1" title={webOpenError}>{webOpenError}</div>}
         {/* Error Message (Non-banned) */}
         {account.lastError && !isUnauthorized && (

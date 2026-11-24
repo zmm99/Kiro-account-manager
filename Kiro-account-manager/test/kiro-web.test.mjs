@@ -102,12 +102,39 @@ test('a manager timeout preserves credentials and the next refresh succeeds', as
   assert.deepEqual(await f.coordinator.managerRefresh(original.refreshToken, async () => timedOut), timedOut)
   assert.deepEqual(f.state.account.credentials, original)
   assert.equal(f.state.commits.length, 0)
-  await f.coordinator.managerRefresh(original.refreshToken, async latest => {
+  const refreshed = await f.coordinator.managerRefresh(original.refreshToken, async latest => {
     assert.equal(latest, original.refreshToken)
     return { success: true, accessToken: 'fixture-new-manager-at' }
   })
+  assert.equal(refreshed.accessToken, 'fixture-new-manager-at')
+  assert.equal(f.state.commits.length, 0, 'the ordinary manager caller owns persistence')
+})
+
+test('ordinary manager refresh does not read accounts or require Web storage', async () => {
+  const f = await fixture()
+  f.dependencies.accounts = () => { throw Error('Web storage unavailable') }
+  const result = await f.coordinator.managerRefresh('fixture-rt-0', async rt => {
+    assert.equal(rt, 'fixture-rt-0')
+    return { success: true, accessToken: 'fixture-new-at', refreshToken: 'fixture-new-rt' }
+  })
+  assert.equal(result.refreshToken, 'fixture-new-rt')
+})
+
+test('opening a Web window during a manager refresh uses the confirmed rotation', async () => {
+  const f = await fixture()
+  let finish
+  const manager = f.coordinator.managerRefresh('fixture-rt-0', () => new Promise(resolve => { finish = resolve }))
+  const web = f.coordinator.webRefresh(f.state.account.id, async latest => {
+    assert.equal(latest, 'fixture-rt-1')
+    return { success: true, accessToken: 'fixture-web-at', refreshToken: 'fixture-rt-2' }
+  })
+  finish({ success: true, accessToken: 'fixture-new-manager-at', refreshToken: 'fixture-rt-1' })
+  await Promise.all([manager, web])
+  assert.equal(f.state.account.credentials.refreshToken, 'fixture-rt-2')
   assert.equal(f.state.account.credentials.accessToken, 'fixture-new-manager-at')
-  assert.equal(f.state.account.credentials.refreshToken, original.refreshToken)
+  f.coordinator.closeWebAccount(f.state.account.id)
+  f.dependencies.accounts = () => { throw Error('closed profile should not be consulted') }
+  await f.coordinator.managerRefresh('fixture-rt-2', async () => ({ success: false, error: 'HTTP 401' }))
 })
 
 test('a legacy pending journal permits retries and cannot roll back newer credentials', async () => {

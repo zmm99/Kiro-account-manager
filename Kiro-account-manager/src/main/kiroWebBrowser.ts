@@ -287,7 +287,11 @@ export class KiroWebBrowser {
       if (session.run) {
         await session.run.close()
       }
-      if (this.sessions.get(session.accountId) === session) this.sessions.delete(session.accountId)
+      await session.refresh?.catch(() => {})
+      if (this.sessions.get(session.accountId) === session) {
+        this.sessions.delete(session.accountId)
+        this.deps.coordinator.closeWebAccount(session.accountId)
+      }
     })
     return session.closing
   }

@@ -387,7 +387,7 @@ interface AccountsActions {
   updateAccountStatus: (id: string, status: AccountStatus, error?: string) => void
   refreshAccountToken: (id: string) => Promise<boolean>
   batchRefreshTokens: (ids: string[]) => Promise<BatchOperationResult>
-  checkAccountStatus: (id: string) => Promise<void>
+  checkAccountStatus: (id: string) => Promise<boolean>
   batchCheckStatus: (ids: string[]) => Promise<BatchOperationResult>
 
   // 统计
@@ -1454,7 +1454,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     const { accounts, updateAccountStatus } = get()
     const account = accounts.get(id)
 
-    if (!account) return
+    if (!account) return false
 
     // 设置刷新状态，提供视觉反馈
     updateAccountStatus(id, 'refreshing')
@@ -1536,6 +1536,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
         if (result.data.newCredentials) {
           console.log(`[Account] Token refreshed for ${account?.email}`)
         }
+        return true
       } else {
         // 检查是否是封禁错误
         const isBanned = (result.error as { isBanned?: boolean })?.isBanned
@@ -1549,6 +1550,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     } catch (error) {
       updateAccountStatus(id, 'error', error instanceof Error ? error.message : 'Unknown error')
     }
+    return false
   },
 
   batchCheckStatus: async (ids) => {
