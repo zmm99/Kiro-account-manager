@@ -22,7 +22,7 @@ for (const name of ['kiroWebCredentials', 'kiroWebBrowserLauncher', 'kiroWebBrow
   } }).outputText
   await fs.writeFile(path.join(temporary, `${name}.js`), output)
 }
-const { KiroWebCredentialCoordinator, mergeCredentialSnapshots, tokenHash, REFRESH_UNCERTAIN_ERROR, WebLoginError } = require(path.join(temporary, 'kiroWebCredentials.js'))
+const { KiroWebCredentialCoordinator, mergeCredentialSnapshots, tokenHash, WebLoginError } = require(path.join(temporary, 'kiroWebCredentials.js'))
 const { KiroWebBrowser, csrfFromHtml } = require(path.join(temporary, 'kiroWebBrowser.js'))
 const { chromeArguments } = require(path.join(temporary, 'kiroWebBrowserLauncher.js'))
 const key = randomBytes(32)
@@ -41,7 +41,7 @@ const fixture = async (options = {}) => {
   const directory = path.join(temporary, `fixture-${++nextFixture}`)
   const provider = options.provider || 'Github'
   const account = { id: 'fixture-account', email: 'fixture@example.test', userId: 'fixture-user', idp: provider,
-    credentials: { provider, authMethod: 'social', refreshToken: 'fixture-rt-0', accessToken: 'fixture-manager-at', expiresAt: 9000 } }
+    credentials: { provider, authMethod: 'social', refreshToken: 'fixture-rt-0', accessToken: 'fixture-manager-at', expiresAt: Date.now() + 3_600_000 } }
   const state = { account, commits: [], failCommit: false }
   const dependencies = { directory: path.join(directory, 'credentials'), accounts: () => [state.account], encrypt: protect, decrypt: unprotect,
     beforeWebRefresh: options.guard || (async () => {}),
@@ -95,18 +95,45 @@ test('durable rotated credentials recover after a store commit failure', async (
   assert.equal(f.state.account.credentials.refreshToken, 'fixture-rt-1')
 })
 
-test('ambiguous refresh remains blocked after restart; explicit new credentials permit recovery', async () => {
+test('a manager timeout preserves credentials and the next refresh succeeds', async () => {
   const f = await fixture()
-  await f.coordinator.webRefresh('fixture-account', async () => ({ success: false, error: REFRESH_UNCERTAIN_ERROR }))
-  let calls = 0
-  const restarted = new KiroWebCredentialCoordinator(f.dependencies)
-  await assert.rejects(restarted.webRefresh('fixture-account', async () => { calls++; return { success: false } }))
-  assert.equal(calls, 0)
-  f.state.account.credentials.refreshToken = 'fixture-fresh-login-rt'
-  await restarted.webRefresh('fixture-account', async latest => {
-    calls++; assert.equal(latest, 'fixture-fresh-login-rt'); return { success: true, accessToken: 'fixture-at' }
+  const original = { ...f.state.account.credentials }
+  const timedOut = { success: false, error: 'fixture timeout' }
+  assert.deepEqual(await f.coordinator.managerRefresh(original.refreshToken, async () => timedOut), timedOut)
+  assert.deepEqual(f.state.account.credentials, original)
+  assert.equal(f.state.commits.length, 0)
+  await f.coordinator.managerRefresh(original.refreshToken, async latest => {
+    assert.equal(latest, original.refreshToken)
+    return { success: true, accessToken: 'fixture-new-manager-at' }
   })
-  assert.equal(calls, 1)
+  assert.equal(f.state.account.credentials.accessToken, 'fixture-new-manager-at')
+  assert.equal(f.state.account.credentials.refreshToken, original.refreshToken)
+})
+
+test('a legacy pending journal permits retries and cannot roll back newer credentials', async () => {
+  const f = await fixture()
+  const original = { ...f.state.account.credentials, credentialRevision: 2 }
+  f.state.account.credentials = original
+  const file = path.join(f.dependencies.directory, `${tokenHash(f.state.account.id)}.enc`)
+  await fs.mkdir(f.dependencies.directory, { recursive: true })
+  await fs.writeFile(file, protect(JSON.stringify({
+    accountId: f.state.account.id, provider: original.provider, revision: 1, pending: true,
+    refreshToken: 'fixture-older-rt', accessToken: 'fixture-older-at', expiresAt: 1000,
+    hashes: [tokenHash('fixture-older-rt'), tokenHash(original.refreshToken)]
+  })))
+  const restarted = new KiroWebCredentialCoordinator(f.dependencies)
+  await assert.rejects(restarted.webRefresh(f.state.account.id, async latest => {
+    assert.equal(latest, original.refreshToken)
+    throw Error('fixture timeout')
+  }), /fixture timeout/)
+  assert.deepEqual(f.state.account.credentials, original)
+  assert.equal(f.state.commits.length, 0)
+  await restarted.managerRefresh(original.refreshToken, async latest => {
+    assert.equal(latest, original.refreshToken)
+    return { success: true, accessToken: 'fixture-new-at' }
+  })
+  assert.equal(f.state.account.credentials.credentialRevision, 3)
+  assert.equal(JSON.parse(unprotect(await fs.readFile(file))).pending, undefined)
 })
 
 test('corrupt recovery and IDE guard fail before consuming a token', async () => {
@@ -142,7 +169,7 @@ test('CSRF extraction handles actual meta attribute variants; launch args isolat
 })
 
 function fakeBrowser(f, options = {}) {
-  const profiles = new Map(), launches = [], routes = new Map(), pages = []
+  const profiles = options.profiles || new Map(), launches = [], routes = new Map(), pages = []
   const server = { rt: 'fixture-rt-0', refreshCalls: 0, mismatch: false, closeCalls: 0 }
   const response = (status, data) => ({ status: () => status, ok: () => status >= 200 && status < 300,
     body: async () => Buffer.from(encode(data)), text: async () => String(data) })
@@ -175,6 +202,8 @@ function fakeBrowser(f, options = {}) {
           assert.equal(request.headers['smithy-protocol'], 'rpc-v2-cbor')
           if (url.endsWith('/RefreshToken')) {
             server.refreshCalls++
+            if (server.refreshError) throw server.refreshError
+            if (server.refreshStatus) return response(server.refreshStatus, {})
             assert.equal(jar.get('RefreshToken')?.value, server.rt)
             assert.equal(jar.get('Idp')?.value, f.state.account.credentials.provider)
             assert.equal(request.headers['X-CSRF-Token'], 'fixture-page-csrf')
@@ -184,7 +213,7 @@ function fakeBrowser(f, options = {}) {
             jar.set('AccessToken', { name: 'AccessToken', value: `fixture-web-at-${server.refreshCalls}`, domain: 'app.kiro.dev', path: '/' })
             return response(200, { accessToken: `fixture-web-at-${server.refreshCalls}`, csrfToken: 'fixture-new-csrf', expiresIn: 3600 })
           }
-          return response(200, { status: 'Active', idp: server.providerOverride || f.state.account.credentials.provider, email: 'fixture@example.test', userId: server.mismatch ? 'fixture-other-user' : 'fixture-user' })
+          return response(server.infoStatus || 200, { status: 'Active', idp: server.providerOverride || f.state.account.credentials.provider, email: 'fixture@example.test', userId: server.mismatch ? 'fixture-other-user' : 'fixture-user' })
         }
       } }
     return { context, page, browser, pid: 1, close: async () => { server.closeCalls++; profiles.set(profile, [...jar.entries()]); browser.emit('disconnected') } }
@@ -231,6 +260,50 @@ test('Google identity cannot be accepted as Github and unsupported providers can
   assert.equal((await blocked.web.open('fixture-account')).success, false)
   assert.equal(blocked.launches.length, 0)
   await blocked.web.shutdown()
+})
+
+test('Web renewal propagates network errors, rate limits, and credential rejection distinctly', async () => {
+  const f = await fixture(), mock = fakeBrowser(f)
+  assert.equal((await mock.web.open(f.state.account.id)).success, true)
+  const original = { ...f.state.account.credentials }
+  const intercept = mock.routes.get('https://app.kiro.dev/service/KiroWebPortalService/operation/RefreshToken')
+  const renew = async () => {
+    let outcome
+    await intercept({
+      request: () => ({ method: () => 'POST', headers: () => ({}),
+        frame: () => ({ url: () => 'https://app.kiro.dev/home', page: () => mock.pages[0] }) }),
+      abort: async reason => { outcome = reason },
+      fulfill: async result => { outcome = result.status }
+    })
+    return outcome
+  }
+  mock.server.refreshError = Error('fixture timeout')
+  assert.equal(await renew(), 'failed')
+  mock.server.refreshError = undefined
+  for (const status of [429, 503, 401, 403]) {
+    mock.server.refreshStatus = status
+    assert.equal(await renew(), status)
+    assert.deepEqual(f.state.account.credentials, original)
+  }
+  mock.server.refreshStatus = undefined
+  assert.equal(await renew(), 200)
+  assert.equal(f.state.account.credentials.accessToken, original.accessToken)
+  await mock.web.shutdown()
+})
+
+test('a temporary user-info failure on reopen preserves the authenticated browser profile', async () => {
+  const f = await fixture(), mock = fakeBrowser(f)
+  assert.equal((await mock.web.open(f.state.account.id)).success, true)
+  await mock.web.shutdown()
+  const reopened = fakeBrowser(f, { profiles: mock.profiles })
+  reopened.server.infoStatus = 503
+  const failed = await reopened.web.open(f.state.account.id)
+  assert.equal(failed.success, false)
+  assert.match(failed.error, /503/)
+  reopened.server.infoStatus = 200
+  assert.deepEqual(await reopened.web.open(f.state.account.id), { success: true, reused: true })
+  assert.equal(reopened.server.refreshCalls, 0)
+  await reopened.web.shutdown()
 })
 
 test('double click shares startup; separate profile IDs remain path-safe', async () => {

@@ -33,7 +33,7 @@ import { registerProxyPoolIpcHandlers } from './ipc/proxyPool'
 import { registerAppUpdates } from './appUpdates'
 import { KiroWebBrowser } from './kiroWebBrowser'
 import { KiroWebCredentialCoordinator, configureKiroWebCredentials, coordinateManagerRefresh,
-  mergeCredentialSnapshots, REFRESH_UNCERTAIN_ERROR, WebLoginError, type WebAccount } from './kiroWebCredentials'
+  mergeCredentialSnapshots, WebLoginError, type WebAccount } from './kiroWebCredentials'
 import {
   createTray,
   destroyTray,
@@ -693,7 +693,7 @@ async function refreshSocialToken(
       expiresIn: data.expiresIn
     }
   } catch (error) {
-    return { success: false, error: REFRESH_UNCERTAIN_ERROR }
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
   }
 }
 
@@ -707,9 +707,10 @@ async function refreshTokenByMethod(
   proxyUrl?: string  // 账号绑定的代理 URL（可选，优先级最高）
 ): Promise<OidcRefreshResult> {
   // 如果是社交登录，使用 Kiro Auth Service 刷新
-  return coordinateManagerRefresh(token, latest => authMethod === 'social'
-    ? refreshSocialToken(latest, proxyUrl)
-    : refreshOidcToken(latest, clientId, clientSecret, region, proxyUrl))
+  if (authMethod === 'social') {
+    return coordinateManagerRefresh(token, latest => refreshSocialToken(latest, proxyUrl))
+  }
+  return refreshOidcToken(token, clientId, clientSecret, region, proxyUrl)
 }
 
 function generateInvocationId(): string {

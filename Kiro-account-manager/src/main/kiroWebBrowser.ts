@@ -13,7 +13,7 @@ const AUTH_NAMES = /^(AccessToken|RefreshToken|Idp|UserId|SessionToken)$/
 
 export interface OpenKiroWebResult { success: boolean; reused?: boolean; error?: string }
 interface Binding { userId: string; sourceHash: string; provider: string }
-interface PortalResult extends TokenRefreshResult { csrfToken?: string; data?: Record<string, unknown> }
+interface PortalResult extends TokenRefreshResult { status: number; data: Record<string, unknown> }
 interface WebSession {
   accountId: string
   provider: 'Github' | 'Google'
@@ -52,7 +52,7 @@ function portalError(status: number, data: Record<string, unknown>): string {
   // Never return raw upstream messages, headers, bodies, URLs, or cookie values.
   const type = String(data.__type || '').split('#').pop()
   if (type === 'AccountSuspendedException') return '该账号暂不可使用 Kiro Web，请按官方流程处理账号状态'
-  if (status === 401 || status === 403) return 'Kiro Web 拒绝了当前凭据，请重新授权该账号'
+  if (status === 401 || type === 'UnauthorizedException' || type === 'InvalidGrantException') return 'Kiro Web 拒绝了当前凭据，请重新授权该账号'
   if (status === 429) return 'Kiro Web 请求过于频繁，请稍后重试'
   return `Kiro Web 请求失败（HTTP ${status}）`
 }
@@ -136,11 +136,10 @@ export class KiroWebBrowser {
           return
         }
         const result = await this.refresh(session, route.request().frame().page())
-        await route.fulfill({ status: result.success ? 200 : 401, contentType: 'application/cbor',
-          body: Buffer.from(encode(result.success ? result.data : { __type: 'UnauthorizedException', message: result.error })) })
+        await route.fulfill({ status: result.status, contentType: 'application/cbor',
+          body: Buffer.from(encode(result.data)) })
       } catch {
-        await route.fulfill({ status: 401, contentType: 'application/cbor',
-          body: Buffer.from(encode({ __type: 'UnauthorizedException', message: '网页续期已停止，请从管理器重新打开' })) }).catch(() => {})
+        await route.abort('failed').catch(() => {})
       }
     })
     // A Web sign-out clears this profile only; it must not revoke a shared IDE RT.
@@ -218,7 +217,9 @@ export class KiroWebBrowser {
 
   private async userInfo(session: WebSession, host: Page, csrf: string): Promise<Record<string, unknown>> {
     const response = await this.browserRequest(session, host, `${RPC}GetUserInfo`, csrf, { origin: 'KIRO_IDE' })
-    return response.status === 200 ? decodedResponse(response) : {}
+    if (response.status === 401 || response.status === 403) return {}
+    if (response.status !== 200) throw new WebLoginError(portalError(response.status, {}))
+    return decodedResponse(response)
   }
 
   private refresh(session: WebSession, host = session.run!.page): Promise<PortalResult> {
@@ -245,7 +246,7 @@ export class KiroWebBrowser {
     // Always derive CSRF after the latest RT and Idp have been installed. Keep
     // any UserId cookie issued by the server; deleting it can invalidate CSRF.
     const csrf = await this.bootstrap(session, host)
-    if (!csrf) return { success: false, error: 'Kiro Web 未提供 CSRF，认证流程可能已变化' }
+    if (!csrf) throw new WebLoginError('Kiro Web 未提供 CSRF，认证流程可能已变化')
     const response = await this.browserRequest(session, host, `${RPC}RefreshToken`, csrf, {})
     const cookies = await context.cookies(ORIGIN)
     const refreshToken = cookies.find(c => c.name === 'RefreshToken')?.value || latest
@@ -253,11 +254,14 @@ export class KiroWebBrowser {
     if (response.status === 200 || refreshToken !== latest) {
       await this.save(session.accountId, 'recovery', { cookies, sourceHash: tokenHash(latest), status: response.status })
     }
-    const data = decodedResponse(response)
     if (response.status !== 200) {
-      if (refreshToken !== latest) throw new WebLoginError('异常刷新响应包含新凭据，已保留恢复记录并停止续期')
-      return { success: false, error: portalError(response.status, data) }
+      let details: Record<string, unknown> = {}
+      try { details = decodedResponse(response) || {} } catch { /* The error body may be empty or HTML. */ }
+      const error = portalError(response.status, details)
+      const data = typeof details.__type === 'string' ? { __type: details.__type, message: error } : { message: error }
+      return { success: false, status: response.status, error, data }
     }
+    const data = decodedResponse(response)
     // Durable, protected recovery BEFORE further verification can fail.
     await this.save(session.accountId, 'recovery', { data, cookies, sourceHash: tokenHash(latest) })
     if (typeof data.accessToken !== 'string' || !data.accessToken || typeof data.csrfToken !== 'string' || !data.csrfToken) {
@@ -272,8 +276,8 @@ export class KiroWebBrowser {
     }
     session.binding = { userId: info.userId, sourceHash: tokenHash(refreshToken), provider: session.provider }
     await this.save(session.accountId, 'binding', session.binding)
-    return { success: true, accessToken: data.accessToken, refreshToken,
-      csrfToken: data.csrfToken, expiresIn: typeof data.expiresIn === 'number' ? data.expiresIn : 3600, data }
+    return { success: true, status: response.status, accessToken: data.accessToken, refreshToken,
+      expiresIn: typeof data.expiresIn === 'number' ? data.expiresIn : 3600, data }
   }
 
   private close(session: WebSession): Promise<void> {

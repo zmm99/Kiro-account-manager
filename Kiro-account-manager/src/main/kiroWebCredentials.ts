@@ -37,7 +37,6 @@ interface CredentialHead {
   refreshToken: string
   hashes: string[]
   revision: number
-  pending: boolean
   accessToken?: string
   expiresAt?: number
 }
@@ -55,7 +54,6 @@ export interface CredentialDependencies {
 
 export const tokenHash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export class WebLoginError extends Error {}
-export const REFRESH_UNCERTAIN_ERROR = '网络中断，刷新结果不确定；请勿重试旧 RT'
 
 /** Same-directory replacement; a truncated credential file is never published. */
 export async function atomicPrivateWrite(file: string, data: Buffer | string): Promise<void> {
@@ -69,15 +67,10 @@ export async function atomicPrivateWrite(file: string, data: Buffer | string): P
   }
 }
 
-/**
- * One lease per credential lineage, shared by manager and intercepted Web refreshes.
- * A protected pending journal is written BEFORE the request. After an ambiguous
- * transport/crash, old RTs are not automatically replayed.
- */
+/** Serialize manager and Web refreshes that share a rotating credential. */
 export class KiroWebCredentialCoordinator {
   private tails = new Map<string, Promise<void>>()
   private heads = new Map<string, CredentialHead>()
-  private blocked = new Set<string>()
   private managerTasks = new Map<string, Promise<TokenRefreshResult>>()
   constructor(private deps: CredentialDependencies) {}
 
@@ -106,10 +99,11 @@ export class KiroWebCredentialCoordinator {
   }
 
   private async writeHead(head: CredentialHead): Promise<void> {
+    // Retain the confirmed rotation for the next attempt even if the disk write fails.
+    this.heads.set(head.accountId, head)
     await fs.mkdir(this.deps.directory, { recursive: true })
     // Encryption has no plaintext fallback.
     await atomicPrivateWrite(this.filename(head.accountId), this.deps.encrypt(JSON.stringify(head)))
-    this.heads.set(head.accountId, head)
   }
 
   private async lock<T>(key: string, action: () => Promise<T>): Promise<T> {
@@ -162,58 +156,34 @@ export class KiroWebCredentialCoordinator {
     // Duplicate imported rows sharing an RT also share the same lease.
     const canonical = await this.findAccount(selected.credentials.refreshToken)
     return this.lock(canonical?.id || id, async () => {
-      const account = this.deps.accounts().find(a => a.id === id)
+      let account = this.deps.accounts().find(a => a.id === id)
       if (!account?.credentials.refreshToken) throw new WebLoginError('账号已删除或凭据已变更')
       const previous = await this.readHead(account)
-      if (!previous) this.blocked.delete(id) // Explicitly replaced credentials start a new lineage.
-      if (this.blocked.has(id) || previous?.pending) {
-        throw new WebLoginError('上次刷新结果不确定，已停止复用旧 RT；请恢复凭据或重新授权')
-      }
-      const currentRt = previous?.refreshToken || account.credentials.refreshToken
-      if (kind === 'web') await this.deps.beforeWebRefresh(account, currentRt)
-      // Recover a completed durable commit before issuing another request.
-      if (previous && (previous.refreshToken !== account.credentials.refreshToken ||
-        previous.revision > (account.credentials.credentialRevision || 0))) {
+      // Older versions also journaled in-flight attempts. Only a newer revision
+      // carries credentials to recover; the legacy pending flag does not affect retries.
+      if (previous && previous.revision > (account.credentials.credentialRevision || 0)) {
         await this.deps.commit(account, previous)
+        account = this.deps.accounts().find(a => a.id === id)
+        if (!account?.credentials.refreshToken) throw new WebLoginError('账号已删除或凭据已变更')
       }
-      const freshAccount = this.deps.accounts().find(a => a.id === id)!
-      const pending: CredentialHead = {
-        accountId: id, provider: this.provider(account), refreshToken: currentRt,
-        hashes: [...new Set([...(previous?.hashes || []), tokenHash(currentRt)])],
-        revision: Math.max(previous?.revision || 0, freshAccount.credentials.credentialRevision || 0),
-        accessToken: freshAccount.credentials.accessToken, expiresAt: freshAccount.credentials.expiresAt,
-        pending: true
-      }
-      await this.writeHead(pending)
-      let result: T
-      try { result = await run(currentRt) } catch (error) {
-        this.blocked.add(id)
-        if (error instanceof WebLoginError) throw error
-        throw new WebLoginError('刷新结果不确定，已保留加密恢复记录；不会重试旧 RT')
-      }
-      if (!result.success || !result.accessToken) {
-        if (result.error === REFRESH_UNCERTAIN_ERROR) {
-          this.blocked.add(id)
-          return result
-        }
-        await this.writeHead({ ...pending, pending: false })
-        return result
-      }
+      const currentRt = account.credentials.refreshToken
+      if (kind === 'web') await this.deps.beforeWebRefresh(account, currentRt)
+      const result = await run(currentRt)
+      if (!result.success || !result.accessToken) return result
+
       const nextRt = result.refreshToken || currentRt
       const next: CredentialHead = {
-        ...pending, refreshToken: nextRt,
-        hashes: [...new Set([...pending.hashes, tokenHash(nextRt)])],
-        revision: pending.revision + 1, pending: false,
-        // Web AT is NOT substituted for the IDE/manager AT.
-        accessToken: kind === 'manager' ? result.accessToken : freshAccount.credentials.accessToken,
-        expiresAt: kind === 'manager' ? Date.now() + (result.expiresIn || 3600) * 1000 : freshAccount.credentials.expiresAt
+        accountId: id, provider: this.provider(account), refreshToken: nextRt,
+        hashes: [...new Set([...(previous?.hashes || []), tokenHash(currentRt), tokenHash(nextRt)])],
+        revision: (account.credentials.credentialRevision || 0) + 1,
+        accessToken: kind === 'manager' ? result.accessToken : account.credentials.accessToken,
+        expiresAt: kind === 'manager' ? Date.now() + (result.expiresIn || 3600) * 1000 : account.credentials.expiresAt
       }
       try {
         await this.writeHead(next)
-        await this.deps.commit(freshAccount, next)
+        await this.deps.commit(account, next)
       } catch {
-        this.blocked.add(id)
-        throw new WebLoginError('新凭据提交未完成，已停止刷新；请检查加密恢复记录')
+        throw new WebLoginError('新凭据保存失败，请检查本地存储后重试')
       }
       return { ...result, refreshToken: nextRt }
     })
